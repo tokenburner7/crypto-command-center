@@ -1,57 +1,52 @@
-# Crypto Command Center — Implementation Plan v2
+# Crypto Command Center — Implementation Plan v3
 
 > **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
-> **Revision:** v2 — incorporates adversarial review fixes for data correctness, signal integrity, and production readiness.
+> **Revision:** v3 — incorporates Session 1 debate scope decisions + Session 1A resolutions.
+> **Debate source:** `docs/debate/session-1-scope.md`, `docs/debate/session-1a-open-questions.md`
 
-**Goal:** A single unified web dashboard combining on-chain intelligence, AI-powered sentiment analysis, macro/crypto overlay, and stablecoin flow tracking — with a signal confluence engine that surfaces high-conviction moments with directional awareness.
+**Goal:** A unified web dashboard with on-chain whale tracking (BTC + ETH), stablecoin flow monitoring, and a 2-signal confluence engine — shipping in one week. Sentiment and macro panels follow in Week 2 as experimental opt-in features.
 
-**Architecture:** FastAPI backend (Python 3.12) with async data ingestion from 8+ public APIs, SQLite (WAL mode) persistence, WebSocket live updates for all panels. React 18 + Vite frontend with TradingView Lightweight Charts and Tailwind CSS. Four panel components + a signal overlay bar. Backend serves the built React app as static files — single deployable unit.
+**Architecture:** FastAPI backend (Python 3.12) with async data ingestion, SQLite (WAL mode), repository layer (200-line budget), WebSocket live updates with auth token. React 18 + Vite frontend with TradingView Lightweight Charts and Tailwind CSS. SignalBar is the visual hero — dominant, narrative-driven, with full 4-state spectrum (CALIBRATING → WEAK → MODERATE → STRONG).
 
-**Tech Stack:** Python 3.12, FastAPI, httpx, aiosqlite, Pydantic v2 / React 18, Vite 6, Tailwind CSS 4, lightweight-charts (TradingView) / APScheduler, OpenAI API (sentiment, batched)
+**Phase 1a (this week):** On-Chain (BTC + ETH) + Stablecoin + 2-signal SignalBar + security baseline + repository layer + degraded states. **12 tasks.**
+
+**Phase 1b (next week):** Sentiment (Reddit + batched LLM) + Macro (FRED overlay). Experimental — opt-in toggles, excluded from SignalBar by default. **8 tasks.**
+
+**Tech Stack:** Python 3.12, FastAPI, httpx, aiosqlite, Pydantic v2 / React 18, Vite 6, Tailwind CSS 4, lightweight-charts / APScheduler, OpenAI API (Phase 1b only)
 
 ---
 
-### Phase 0: Prerequisites & Scaffold
+## Phase 0: Security Baseline & Prerequisites
 
 ---
 
-### Task 0.1: Create .gitignore, README, and environment setup
+### Task 0.1: Security-first initial commit
 
-**Objective:** Prevent committing build artifacts, document the project, and wire up dotenv loading before any code is written.
+**Objective:** Ship the security baseline as a standalone PR before any feature code. `.gitignore`, restricted CORS, WebSocket auth token generation, CSP header, `load_dotenv()`.
 
 **Files:**
 - Create: `.gitignore`
 - Create: `README.md`
 - Create: `backend/.env.example`
+- Create: `backend/main.py` (with security config)
+- Create: `backend/app/__init__.py`
 
 **Step 1: Write .gitignore**
 
 `.gitignore`:
 ```
-# Python
 __pycache__/
 *.py[cod]
 venv/
 *.egg-info/
 dist/
-
-# Database
 *.db
 *.db-journal
 *.db-wal
-
-# Environment
 .env
-
-# Node
 node_modules/
 frontend/dist/
-
-# OS
 .DS_Store
-Thumbs.db
-
-# IDE
 .vscode/
 .idea/
 ```
@@ -62,10 +57,9 @@ Thumbs.db
 ```markdown
 # Crypto Command Center
 
-A unified dashboard for crypto market intelligence: on-chain whale tracking, AI-powered sentiment analysis, macro/crypto correlation overlay, and stablecoin flow monitoring — with a real-time signal confluence engine.
+Unified crypto dashboard: on-chain whale tracking (BTC + ETH), stablecoin flow monitoring, and real-time signal confluence.
 
 ## Quick Start
-
 ```bash
 make install
 make build
@@ -74,52 +68,134 @@ make run
 ```
 
 ## API Keys (optional)
-
-Set in `backend/.env`. Most sources work on free tiers without keys:
+Set in `backend/.env`. Free tiers work without most keys:
 
 | Service | Key | Free Tier |
 |---------|-----|-----------|
-| OpenAI | `OPENAI_API_KEY` | Needed for sentiment scoring |
-| FRED | `FRED_API_KEY` | Free from stlouisfed.org |
 | Etherscan | `ETHERSCAN_API_KEY` | Free from etherscan.io |
+| FRED | `FRED_API_KEY` | Free from stlouisfed.org |
+| OpenAI | `OPENAI_API_KEY` | Needed for sentiment (Phase 1b) |
 ```
 
 **Step 3: Create backend/.env.example**
 
 `backend/.env.example`:
 ```
-# Copy to .env and fill in (optional — free tiers work without most)
+# Phase 1a
+ETHERSCAN_API_KEY=
+# Phase 1b (optional)
 OPENAI_API_KEY=
 FRED_API_KEY=
-ETHERSCAN_API_KEY=
-# Future: X_BEARER_TOKEN, WHALE_ALERT_API_KEY, NEWSAPI_KEY
 ```
 
-**Step 4: Commit**
+**Step 4: Write main.py with security-first config**
+
+`backend/main.py`:
+```python
+"""Crypto Command Center — FastAPI backend."""
+import os
+import secrets
+from dotenv import load_dotenv
+load_dotenv()
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+
+app = FastAPI(title="Crypto Command Center", version="0.3.0")
+
+# Security: CORS restricted to localhost (not wildcard)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:8000",
+        "http://localhost:5173",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:5173",
+    ],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+# Security: CSP header
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "connect-src 'self' ws: wss:; "
+            "img-src 'self' data:;"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Security: WebSocket auth token (generated at startup)
+WS_AUTH_TOKEN = secrets.token_urlsafe(32)
+print(f"[security] WebSocket auth token: {WS_AUTH_TOKEN}")
+print(f"[security] Connect with: ws://localhost:8000/ws?token={WS_AUTH_TOKEN}")
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "version": "0.3.0"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+```
+
+**Step 5: Verify security config**
+
+```bash
+cd /Users/tn/dev/crypto-dashboard/backend
+python3 -m venv venv && source venv/bin/activate
+pip install fastapi uvicorn[standard] python-dotenv
+python main.py &
+sleep 2
+# Verify CORS is restrictive
+curl -s -H "Origin: https://evil.com" http://127.0.0.1:8000/api/health -I | grep -i access-control
+# Expected: NO Access-Control-Allow-Origin header (blocked)
+# Verify localhost works
+curl -s -H "Origin: http://localhost:5173" http://127.0.0.1:8000/api/health -I | grep -i access-control
+# Expected: Access-Control-Allow-Origin: http://localhost:5173
+kill %1
+```
+
+**Step 6: Commit as standalone security PR**
 
 ```bash
 cd /Users/tn/dev/crypto-dashboard
-git add -A && git commit -m "chore: add .gitignore, README, and env template"
+git add -A && git commit -m "security: baseline — CORS restricted, CSP header, WS auth token, .gitignore"
 ```
 
 ---
 
-### Task 0.2: Create project structure and initialize dependencies
+### Task 0.2: Project scaffold + frontend init
 
-**Objective:** Create the monorepo with backend and frontend directories, install core dependencies with macOS-compatible verification.
+**Objective:** Create directory structure, install backend + frontend dependencies, verify Vite proxy.
 
 **Files:**
+- Create: directory tree
 - Create: `backend/requirements.txt`
-- Create: `backend/main.py`
+- Create: frontend scaffold (via Vite)
 
-**Step 1: Create directory structure**
+**Step 1: Create directories**
 
 ```bash
-mkdir -p /Users/tn/dev/crypto-dashboard/backend/app/{api,models,services,collectors}
+mkdir -p /Users/tn/dev/crypto-dashboard/backend/app/{api,models,services,collectors,repositories}
 mkdir -p /Users/tn/dev/crypto-dashboard/backend/tests
+touch /Users/tn/dev/crypto-dashboard/backend/app/__init__.py
+touch /Users/tn/dev/crypto-dashboard/backend/app/api/__init__.py
+touch /Users/tn/dev/crypto-dashboard/backend/app/models/__init__.py
+touch /Users/tn/dev/crypto-dashboard/backend/app/services/__init__.py
+touch /Users/tn/dev/crypto-dashboard/backend/app/collectors/__init__.py
+touch /Users/tn/dev/crypto-dashboard/backend/app/repositories/__init__.py
 ```
 
-**Step 2: Create backend requirements.txt**
+**Step 2: Write requirements.txt**
 
 `backend/requirements.txt`:
 ```
@@ -129,60 +205,18 @@ httpx==0.28.1
 aiosqlite==0.20.0
 pydantic==2.10.4
 apscheduler==3.11.0
-openai==1.58.1
 python-dotenv==1.0.1
+# Phase 1b adds: openai==1.58.1
 ```
 
-**Step 3: Install backend dependencies**
-
-```bash
-cd /Users/tn/dev/crypto-dashboard/backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-**Step 4: Create minimal FastAPI main.py with dotenv loading**
-
-`backend/main.py`:
-```python
-"""Crypto Command Center — FastAPI backend."""
-from dotenv import load_dotenv
-load_dotenv()  # Must be first — loads .env before any os.getenv calls
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
-app = FastAPI(title="Crypto Command Center", version="0.2.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.get("/api/health")
-async def health():
-    return {"status": "ok"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-```
-
-**Step 5: Verify backend starts (macOS-compatible)**
+**Step 3: Install**
 
 ```bash
 cd /Users/tn/dev/crypto-dashboard/backend && source venv/bin/activate
-python main.py &
-sleep 3
-curl -s http://localhost:8000/api/health
-# Expected: {"status":"ok"}
-kill %1
+pip install -r requirements.txt
 ```
 
-**Step 6: Scaffold React frontend**
+**Step 4: Scaffold React frontend**
 
 ```bash
 cd /Users/tn/dev/crypto-dashboard
@@ -192,7 +226,7 @@ npm install
 npm install tailwindcss @tailwindcss/vite lightweight-charts lucide-react
 ```
 
-**Step 7: Configure Tailwind + Vite proxy**
+**Step 5: Vite config with proxy**
 
 `frontend/vite.config.js`:
 ```js
@@ -202,47 +236,48 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  server: { proxy: { '/api': 'http://localhost:8000', '/ws': { target: 'ws://localhost:8000', ws: true } } }
+  server: {
+    proxy: {
+      '/api': 'http://127.0.0.1:8000',
+      '/ws': { target: 'ws://127.0.0.1:8000', ws: true }
+    }
+  }
 })
 ```
 
-**Step 8: Verify frontend starts**
+**Step 6: Verify**
 
 ```bash
 cd /Users/tn/dev/crypto-dashboard/frontend && npm run dev &
-sleep 3
-curl -s http://localhost:5173 | head -5
+sleep 3 && curl -s http://localhost:5173 | head -5
 kill %1
-# Expected: HTML response with Vite dev server
 ```
 
-**Step 9: Commit**
+**Step 7: Commit**
 
 ```bash
-cd /Users/tn/dev/crypto-dashboard
-git add -A && git commit -m "chore: scaffold project with FastAPI + React/Vite + Tailwind"
+git add -A && git commit -m "chore: scaffold FastAPI + React/Vite/Tailwind project structure"
 ```
 
 ---
 
-### Phase 1: Data Layer
+## Phase 1: Data Layer
 
 ---
 
-### Task 1.1: Create database schema and connection module (WAL mode)
+### Task 1.1: Database schema with WAL mode + Pydantic models
 
-**Objective:** Set up SQLite schema with WAL mode for concurrent reads/writes, integer timestamps for safe UNIQUE constraints, and proper JSON serialization.
+**Objective:** SQLite schema for Phase 1a panels (whale_transactions, stablecoin_supply, exchange_volumes, signal_confluences), WAL mode, integer timestamps, json serialization for components.
 
 **Files:**
 - Create: `backend/app/database.py`
-- Create: `backend/app/models/__init__.py`
 - Create: `backend/app/models/schemas.py`
 
-**Step 1: Write database module with WAL mode**
+**Step 1: Write database.py**
 
 `backend/app/database.py`:
 ```python
-"""Async SQLite database module with WAL mode."""
+"""Async SQLite database with WAL mode."""
 import aiosqlite
 from pathlib import Path
 
@@ -271,36 +306,13 @@ async def init_db():
             created_at INTEGER DEFAULT (strftime('%s', 'now'))
         );
         
-        CREATE TABLE IF NOT EXISTS exchange_flows (
+        CREATE TABLE IF NOT EXISTS exchange_volumes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             exchange TEXT NOT NULL,
             asset TEXT NOT NULL,
-            inflow_usd REAL,
-            outflow_usd REAL,
-            net_flow_usd REAL,
+            volume_usd REAL NOT NULL,
             timestamp INTEGER NOT NULL,
             UNIQUE(exchange, asset, timestamp)
-        );
-        
-        CREATE TABLE IF NOT EXISTS sentiment_scores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            topic TEXT,
-            score REAL NOT NULL,
-            confidence REAL,
-            summary TEXT,
-            url TEXT,
-            timestamp INTEGER NOT NULL,
-            UNIQUE(source, url, timestamp)
-        );
-        
-        CREATE TABLE IF NOT EXISTS macro_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            indicator TEXT NOT NULL,
-            value REAL NOT NULL,
-            obs_date TEXT,
-            timestamp INTEGER NOT NULL,
-            UNIQUE(indicator, timestamp)
         );
         
         CREATE TABLE IF NOT EXISTS stablecoin_supply (
@@ -318,29 +330,51 @@ async def init_db():
             overall_score REAL NOT NULL,
             signal TEXT NOT NULL,
             direction TEXT NOT NULL,
+            calibration_status TEXT NOT NULL DEFAULT 'calibrating',
+            narrative TEXT,
             components TEXT NOT NULL,
             timestamp INTEGER NOT NULL
         );
         
-        -- Indexes for time-range queries
+        -- Phase 1b tables (created now, populated later)
+        CREATE TABLE IF NOT EXISTS sentiment_scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            topic TEXT,
+            score REAL NOT NULL,
+            confidence REAL,
+            summary TEXT,
+            baseline_fear_greed REAL,
+            url TEXT,
+            timestamp INTEGER NOT NULL,
+            UNIQUE(source, url, timestamp)
+        );
+        
+        CREATE TABLE IF NOT EXISTS macro_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            indicator TEXT NOT NULL,
+            value REAL NOT NULL,
+            obs_date TEXT,
+            timestamp INTEGER NOT NULL,
+            UNIQUE(indicator, timestamp)
+        );
+        
+        -- Indexes
         CREATE INDEX IF NOT EXISTS idx_whale_ts ON whale_transactions(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_sentiment_ts ON sentiment_scores(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_macro_ts ON macro_data(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_whale_chain ON whale_transactions(blockchain);
         CREATE INDEX IF NOT EXISTS idx_supply_ts ON stablecoin_supply(timestamp);
     """)
     await db.commit()
     await db.close()
 ```
 
-**Key fixes from v1:**
-- `PRAGMA journal_mode=WAL` — prevents writer-reader contention
-- `INTEGER` timestamps (not REAL) — safe for UNIQUE constraints
-- `signal_confluences.components` is TEXT — will use `json.dumps()` on write
-- `stablecoin_events` renamed to `stablecoin_supply` — single schema, no duplicates
-- `change_24h_usd` field for supply delta tracking
-- `obs_date` on macro_data for FRED observation dates
+**Key design notes:**
+- `exchange_volumes` renamed from `exchange_flows` — honest labeling (Session 1 decision)
+- `signal_confluences` includes `calibration_status` and `narrative` fields
+- `sentiment_scores` includes `baseline_fear_greed` for Phase 1b comparison
+- All Phase 1b tables created now — no schema migration needed later
 
-**Step 2: Write Pydantic models**
+**Step 2: Write Pydantic schemas**
 
 `backend/app/models/schemas.py`:
 ```python
@@ -357,27 +391,10 @@ class WhaleTransaction(BaseModel):
     asset: str
     timestamp: int
 
-class ExchangeFlow(BaseModel):
+class ExchangeVolume(BaseModel):
     exchange: str
     asset: str
-    inflow_usd: float
-    outflow_usd: float
-    net_flow_usd: float
-    timestamp: int
-
-class SentimentScore(BaseModel):
-    source: str
-    topic: Optional[str] = None
-    score: float
-    confidence: Optional[float] = None
-    summary: Optional[str] = None
-    url: Optional[str] = None
-    timestamp: int
-
-class MacroPoint(BaseModel):
-    indicator: str
-    value: float
-    obs_date: Optional[str] = None
+    volume_usd: float
     timestamp: int
 
 class StablecoinSupply(BaseModel):
@@ -387,64 +404,199 @@ class StablecoinSupply(BaseModel):
     chains: Optional[str] = None
     timestamp: int
 
+class SignalComponent(BaseModel):
+    name: str
+    score: float
+    detail: str
+
 class SignalConfluence(BaseModel):
     overall_score: float
     signal: str
     direction: str
-    components: list[dict]
+    calibration_status: str
+    calibration_progress: Optional[dict] = None
+    narrative: Optional[str] = None
+    components: list[SignalComponent]
+    timestamp: int
+
+# Phase 1b schemas
+class SentimentScore(BaseModel):
+    source: str
+    topic: Optional[str] = None
+    score: float
+    confidence: Optional[float] = None
+    summary: Optional[str] = None
+    baseline_fear_greed: Optional[float] = None
+    url: Optional[str] = None
+    timestamp: int
+
+class MacroPoint(BaseModel):
+    indicator: str
+    value: float
+    obs_date: Optional[str] = None
     timestamp: int
 ```
 
-**Step 3: Create init script**
-
-`backend/init_db.py`:
-```python
-"""Initialize the database."""
-import asyncio
-from app.database import init_db
-asyncio.run(init_db())
-print("Database initialized with WAL mode.")
-```
-
-**Step 4: Run init and verify**
+**Step 3: Init and verify**
 
 ```bash
 cd /Users/tn/dev/crypto-dashboard/backend && source venv/bin/activate
-python init_db.py
-python -c "import aiosqlite, asyncio; db = asyncio.run(aiosqlite.connect('data/ccc.db')); print('WAL:', asyncio.run(db.execute_fetchall('PRAGMA journal_mode'))); asyncio.run(db.close())"
-# Expected: Database initialized with WAL mode.  WAL: [('wal',)]
+python -c "import asyncio; from app.database import init_db; asyncio.run(init_db()); print('OK')"
+python -c "import aiosqlite, asyncio; db = asyncio.run(aiosqlite.connect('data/ccc.db')); rows = asyncio.run(db.execute_fetchall(\"SELECT name FROM sqlite_master WHERE type='table'\")); print([r[0] for r in rows]); asyncio.run(db.close())"
+# Expected: ['whale_transactions', 'exchange_volumes', 'stablecoin_supply', 'signal_confluences', 'sentiment_scores', 'macro_data']
 ```
 
-**Step 5: Add __init__.py files**
+**Step 4: Commit**
 
 ```bash
-touch /Users/tn/dev/crypto-dashboard/backend/app/__init__.py
-touch /Users/tn/dev/crypto-dashboard/backend/app/api/__init__.py
-touch /Users/tn/dev/crypto-dashboard/backend/app/models/__init__.py
-touch /Users/tn/dev/crypto-dashboard/backend/app/services/__init__.py
-touch /Users/tn/dev/crypto-dashboard/backend/app/collectors/__init__.py
-```
-
-**Step 6: Commit**
-
-```bash
-git add -A && git commit -m "feat: add SQLite schema with WAL mode, integer timestamps, and Pydantic v2 models"
+git add -A && git commit -m "feat: add SQLite schema with WAL mode — all Phase 1a + 1b tables"
 ```
 
 ---
 
-### Task 1.2: Create async HTTP client with rate limiting
+### Task 1.2: Repository layer (200-line budget)
 
-**Objective:** Shared httpx client with retry logic, rate limiting, and User-Agent headers required by APIs like Reddit.
+**Objective:** WhaleRepository + StablecoinRepository. The ONLY modules that touch SQLite. 200-line budget enforced — no raw SQL in collectors or API routes.
 
 **Files:**
-- Create: `backend/app/services/http_client.py`
+- Create: `backend/app/repositories/whale_repo.py`
+- Create: `backend/app/repositories/stablecoin_repo.py`
 
-**Step 1: Write HTTP client with default User-Agent**
+**Step 1: Write WhaleRepository**
+
+`backend/app/repositories/whale_repo.py`:
+```python
+"""Whale transaction repository — single source of truth for whale DB operations."""
+from app.database import get_db
+
+class WhaleRepository:
+    @staticmethod
+    async def save(txns: list[dict]):
+        db = await get_db()
+        for tx in txns:
+            await db.execute(
+                """INSERT OR IGNORE INTO whale_transactions 
+                   (tx_hash, blockchain, from_address, to_address, amount_usd, asset, timestamp)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (tx["tx_hash"], tx["blockchain"], tx["from_address"],
+                 tx["to_address"], tx["amount_usd"], tx["asset"], tx["timestamp"])
+            )
+        await db.commit()
+        await db.close()
+    
+    @staticmethod
+    async def get_recent(limit: int = 20, min_usd: float = 500000, blockchain: str = None):
+        db = await get_db()
+        query = "SELECT * FROM whale_transactions WHERE amount_usd >= ?"
+        params = [min_usd]
+        if blockchain:
+            query += " AND blockchain = ?"
+            params.append(blockchain)
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        await db.close()
+        return [dict(r) for r in rows]
+    
+    @staticmethod
+    async def get_stats(hours: int = 24):
+        db = await get_db()
+        cursor = await db.execute(
+            """SELECT COUNT(*) as total, AVG(amount_usd) as avg_amount,
+                      MAX(amount_usd) as max_amount
+               FROM whale_transactions
+               WHERE timestamp > strftime('%s', 'now') - ?""",
+            (hours * 3600,)
+        )
+        row = await cursor.fetchone()
+        await db.close()
+        return dict(row) if row else {"total": 0, "avg_amount": 0, "max_amount": 0}
+    
+    @staticmethod
+    async def count_recent(hours: int = 1):
+        db = await get_db()
+        cursor = await db.execute(
+            "SELECT COUNT(*) as count, AVG(amount_usd) as avg_amount FROM whale_transactions WHERE timestamp > strftime('%s', 'now') - ?",
+            (hours * 3600,)
+        )
+        row = await cursor.fetchone()
+        await db.close()
+        return dict(row)
+```
+
+**Step 2: Write StablecoinRepository**
+
+`backend/app/repositories/stablecoin_repo.py`:
+```python
+"""Stablecoin supply repository."""
+from app.database import get_db
+
+class StablecoinRepository:
+    @staticmethod
+    async def save_supply(data: dict):
+        """Save supply reading. data = {symbol: {total_supply_usd, change_24h_usd, chains, timestamp}}"""
+        db = await get_db()
+        for symbol, d in data.items():
+            await db.execute(
+                """INSERT OR REPLACE INTO stablecoin_supply 
+                   (stablecoin, total_supply_usd, change_24h_usd, chains, timestamp)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (symbol, d["total_supply_usd"], d.get("change_24h_usd", 0),
+                 d.get("chains", ""), d["timestamp"])
+            )
+        await db.commit()
+        await db.close()
+    
+    @staticmethod
+    async def get_latest():
+        db = await get_db()
+        cursor = await db.execute(
+            """SELECT stablecoin, total_supply_usd, change_24h_usd, chains,
+                      MAX(timestamp) as timestamp
+               FROM stablecoin_supply GROUP BY stablecoin"""
+        )
+        rows = await cursor.fetchall()
+        await db.close()
+        return [dict(r) for r in rows]
+    
+    @staticmethod
+    async def get_previous_supply():
+        """Get previous reading per stablecoin for delta computation."""
+        db = await get_db()
+        cursor = await db.execute(
+            "SELECT stablecoin, total_supply_usd, MAX(timestamp) as ts FROM stablecoin_supply GROUP BY stablecoin"
+        )
+        rows = await cursor.fetchall()
+        await db.close()
+        return {r["stablecoin"]: r["total_supply_usd"] for r in rows}
+    
+    @staticmethod
+    async def get_history(stablecoin: str = "USDT", hours: int = 168):
+        db = await get_db()
+        cursor = await db.execute(
+            """SELECT * FROM stablecoin_supply 
+               WHERE stablecoin = ? AND timestamp > strftime('%s', 'now') - ?
+               ORDER BY timestamp ASC""",
+            (stablecoin, hours * 3600)
+        )
+        rows = await cursor.fetchall()
+        await db.close()
+        return [dict(r) for r in rows]
+```
+
+**Step 3: Verify line count**
+
+```bash
+wc -l /Users/tn/dev/crypto-dashboard/backend/app/repositories/*.py
+# Expected: ~150-180 lines total (within 200-line budget)
+```
+
+**Step 4: Write HTTP client (needed by collectors)**
 
 `backend/app/services/http_client.py`:
 ```python
-"""Shared async HTTP client with retry, rate limiting, and headers."""
+"""Shared async HTTP client with User-Agent and rate limiting."""
 import asyncio
 import time
 import httpx
@@ -463,25 +615,22 @@ class RateLimiter:
         self.last_call = time.time()
 
 class APIClient:
-    def __init__(self, base_url: str = "", rate_limit: float = 1.0, 
-                 timeout: int = 30, extra_headers: Optional[dict] = None):
+    def __init__(self, base_url: str = "", rate_limit: float = 1.0, timeout: int = 30):
         self.base_url = base_url
         self.limiter = RateLimiter(rate_limit)
         self.timeout = timeout
         self.default_headers = {
-            "User-Agent": "CryptoCommandCenter/0.2 (personal dashboard; contact via repo)",
-            **(extra_headers or {}),
+            "User-Agent": "CryptoCommandCenter/0.3 (personal dashboard)",
         }
     
     async def get(self, url: str, params: Optional[dict] = None, 
                   headers: Optional[dict] = None, retries: int = 3):
         await self.limiter.acquire()
-        merged_headers = {**self.default_headers, **(headers or {})}
+        merged = {**self.default_headers, **(headers or {})}
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for attempt in range(retries):
                 try:
-                    resp = await client.get(f"{self.base_url}{url}", 
-                                           params=params, headers=merged_headers)
+                    resp = await client.get(f"{self.base_url}{url}", params=params, headers=merged)
                     resp.raise_for_status()
                     return resp.json()
                 except Exception as e:
@@ -490,850 +639,288 @@ class APIClient:
                     await asyncio.sleep(2 ** attempt)
 ```
 
-**Step 2: Verify**
+**Step 5: Commit**
 
 ```bash
-cd /Users/tn/dev/crypto-dashboard/backend && source venv/bin/activate
-python -c "from app.services.http_client import APIClient; c = APIClient(); print('Headers:', c.default_headers); print('Import OK')"
-# Expected: Headers include User-Agent
+git add -A && git commit -m "feat: add repository layer (WhaleRepo + StablecoinRepo, 200-line budget) + HTTP client"
+```
+
+---
+
+### Task 1.3: Exchange wallet config
+
+**Objective:** Config-driven list of exchange wallet addresses for ETH whale tracking. Collector reads this, not hardcoded addresses.
+
+**Files:**
+- Create: `backend/config/exchange_wallets.json`
+
+**Step 1: Write config**
+
+`backend/config/exchange_wallets.json`:
+```json
+{
+  "eth_wallets": [
+    {"address": "0x28C6c06298d514Db089934071355E5743bf21d60", "label": "Binance 1", "chain": "ethereum"},
+    {"address": "0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549", "label": "Binance 2", "chain": "ethereum"},
+    {"address": "0xDFd5293D8e347dFe59E90eFd55b2956a1343963d", "label": "Coinbase 1", "chain": "ethereum"},
+    {"address": "0xdD2FD458Cdead6a2e8Cc22cE1ff4D77be4657f8A", "label": "Coinbase 2", "chain": "ethereum"},
+    {"address": "0x267be1C1D684F78cb4F6a176C4911b741E4Ffdc0", "label": "Kraken 1", "chain": "ethereum"},
+    {"address": "0xE92d1A43df510F82C66382592a047d288f85226f", "label": "Kraken 2", "chain": "ethereum"},
+    {"address": "0x1Db92e2EeBC8E0c075a02BeA49a2935BcD2dFCF4", "label": "Bybit 1", "chain": "ethereum"},
+    {"address": "0xF89d7B52dfad227C83506e415d59d4Ae09BdB7A8", "label": "Bybit 2", "chain": "ethereum"},
+    {"address": "0x06959153B974D0D5fDfd87D561db6d8d4FA0bb0B", "label": "OKX 1", "chain": "ethereum"},
+    {"address": "0x6cC5F688a315f3dC28A7781717a9A798a59fDA7b", "label": "OKX 2", "chain": "ethereum"}
+  ],
+  "btc_tracked": true,
+  "eth_min_value_usd": 500000
+}
+```
+
+**Step 2: Verify config is valid JSON**
+
+```bash
+python3 -m json.tool /Users/tn/dev/crypto-dashboard/backend/config/exchange_wallets.json > /dev/null && echo "Valid JSON"
 ```
 
 **Step 3: Commit**
 
 ```bash
-git add -A && git commit -m "feat: add async HTTP client with User-Agent header and rate limiting"
+git add -A && git commit -m "feat: add exchange wallet config for ETH whale tracking (10 wallets)"
 ```
 
 ---
 
-### Phase 2: On-Chain Intelligence Panel
+## Phase 2: Collectors
 
 ---
 
-### Task 2.1: Whale transaction collector (with address parsing)
+### Task 2.1: BTC whale collector
 
-**Objective:** Fetch large unconfirmed BTC transactions from Blockchain.info mempool, parse from/to addresses, filter by USD threshold, and store with proper address data.
+**Objective:** Fetch unconfirmed large BTC transactions from Blockchain.info, parse addresses, store via WhaleRepository.
 
 **Files:**
-- Create: `backend/app/collectors/whale_collector.py`
+- Create: `backend/app/collectors/btc_whale_collector.py`
 
-**Step 1: Write collector with address parsing**
+**Step 1: Write collector**
 
-`backend/app/collectors/whale_collector.py`:
+`backend/app/collectors/btc_whale_collector.py`:
 ```python
-"""Collect whale transactions from Blockchain.info mempool."""
+"""Collect whale BTC transactions from Blockchain.info mempool."""
 import time
-from app.database import get_db
 from app.services.http_client import APIClient
+from app.repositories.whale_repo import WhaleRepository
 
-WHALE_THRESHOLD_USD = 1_000_000  # $1M+
+WHALE_THRESHOLD_USD = 1_000_000
+client = APIClient(base_url="https://blockchain.info", rate_limit=0.5)
+coingecko = APIClient(base_url="https://api.coingecko.com/api/v3", rate_limit=1)
 
-blockchain_client = APIClient(base_url="https://blockchain.info", rate_limit=0.5)
+_price_cache = {"btc": None, "ts": 0}
 
-async def fetch_blockchain_large_txs():
-    """Fetch large unconfirmed BTC transactions from the mempool."""
+async def _btc_price():
+    now = time.time()
+    if _price_cache["btc"] and (now - _price_cache["ts"]) < 300:
+        return _price_cache["btc"]
+    data = await coingecko.get("/simple/price", params={"ids": "bitcoin", "vs_currencies": "usd"})
+    _price_cache["btc"] = data["bitcoin"]["usd"]
+    _price_cache["ts"] = now
+    return _price_cache["btc"]
+
+async def collect():
     try:
-        data = await blockchain_client.get("/unconfirmed-transactions?format=json")
+        data = await client.get("/unconfirmed-transactions?format=json")
         txs_data = data if isinstance(data, list) else data.get("txs", [])
+        price = await _btc_price()
         txs = []
         for tx in txs_data[:50]:
-            # Parse outputs
-            outputs = tx.get("out", [])
-            total_out = sum(out.get("value", 0) for out in outputs) / 1e8
-            usd_value = total_out * await _get_btc_price()
-            if usd_value >= WHALE_THRESHOLD_USD:
-                # Parse from/to from inputs/outputs
-                from_addr = None
-                to_addrs = []
+            total_out = sum(o.get("value", 0) for o in tx.get("out", [])) / 1e8
+            usd = total_out * price
+            if usd >= WHALE_THRESHOLD_USD:
                 inputs = tx.get("inputs", [])
-                if inputs:
-                    from_addr = inputs[0].get("prev_out", {}).get("addr")
-                for out in outputs:
-                    addr = out.get("addr")
-                    if addr:
-                        to_addrs.append(addr)
-                
+                outputs = tx.get("out", [])
+                from_addr = inputs[0].get("prev_out", {}).get("addr") if inputs else None
+                to_addrs = [o.get("addr") for o in outputs if o.get("addr")]
                 txs.append({
                     "tx_hash": tx["hash"],
                     "blockchain": "bitcoin",
                     "from_address": from_addr,
                     "to_address": to_addrs[0] if to_addrs else None,
-                    "amount_usd": round(usd_value, 2),
+                    "amount_usd": round(usd, 2),
                     "asset": "BTC",
                     "timestamp": int(tx.get("time", time.time())),
                 })
-        return txs
+        if txs:
+            await WhaleRepository.save(txs)
+            print(f"[btc_whale] Collected {len(txs)} whale txns (mempool)")
+        return len(txs)
     except Exception as e:
-        print(f"[whale_collector] Blockchain.info error: {e}")
-        return []
-
-_price_cache = {"btc": None, "btc_ts": 0}
-
-async def _get_btc_price():
-    now = time.time()
-    if _price_cache["btc"] and (now - _price_cache["btc_ts"]) < 300:
-        return _price_cache["btc"]
-    client = APIClient(base_url="https://api.coingecko.com/api/v3", rate_limit=1)
-    data = await client.get("/simple/price", params={"ids": "bitcoin", "vs_currencies": "usd"})
-    price = data["bitcoin"]["usd"]
-    _price_cache["btc"] = price
-    _price_cache["btc_ts"] = now
-    return price
-
-async def save_whale_txs(txs: list[dict]):
-    db = await get_db()
-    for tx in txs:
-        await db.execute(
-            """INSERT OR IGNORE INTO whale_transactions 
-               (tx_hash, blockchain, from_address, to_address, amount_usd, asset, timestamp)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (tx["tx_hash"], tx["blockchain"], tx["from_address"], tx["to_address"],
-             tx["amount_usd"], tx["asset"], tx["timestamp"])
-        )
-    await db.commit()
-    await db.close()
-
-async def collect_whales():
-    """Main collector — call every 5 minutes. Returns count of new whale txns."""
-    txs = await fetch_blockchain_large_txs()
-    if txs:
-        await save_whale_txs(txs)
-        print(f"[whale_collector] Collected {len(txs)} whale txns (mempool)")
-    return len(txs)
-```
-
-**Step 2: Test standalone run**
-
-```bash
-cd /Users/tn/dev/crypto-dashboard/backend && source venv/bin/activate
-python -c "import asyncio; from app.collectors.whale_collector import collect_whales; n = asyncio.run(collect_whales()); print(f'Collected: {n}')"
-# Expected: Collected N whale txns (mempool) — may be 0 during low activity
-```
-
-**Step 3: Commit**
-
-```bash
-git add -A && git commit -m "feat: add whale tx collector with address parsing (Blockchain.info mempool)"
-```
-
----
-
-### Task 2.2: Exchange activity collector
-
-**Objective:** Fetch exchange volume data from CoinGecko as a proxy for exchange activity (real on-chain flows require tagged addresses — v2).
-
-**Files:**
-- Create: `backend/app/collectors/exchange_collector.py`
-
-**Step 1: Write collector with real data**
-
-`backend/app/collectors/exchange_collector.py`:
-```python
-"""Collect exchange activity from CoinGecko exchange volume data."""
-import time
-from app.database import get_db
-from app.services.http_client import APIClient
-
-coingecko = APIClient(base_url="https://api.coingecko.com/api/v3", rate_limit=1)
-
-async def fetch_exchange_volumes():
-    """Fetch 24h BTC volume for major exchanges."""
-    try:
-        # Get exchange list with volume data
-        data = await coingecko.get("/exchanges", params={"per_page": 20})
-        target_exchanges = {"Binance", "Coinbase Exchange", "Kraken", "Bybit", "OKX"}
-        results = []
-        now = int(time.time())
-        for ex in data[:20]:
-            name = ex.get("name", "")
-            if name in target_exchanges:
-                vol_btc = ex.get("trade_volume_24h_btc", 0)
-                # Convert BTC volume to USD estimate
-                btc_price = await _get_btc_price()
-                vol_usd = vol_btc * btc_price
-                results.append({
-                    "exchange": name,
-                    "asset": "BTC",
-                    "volume_usd": round(vol_usd, 2),
-                    "timestamp": now,
-                })
-        return results
-    except Exception as e:
-        print(f"[exchange_collector] Error: {e}")
-        return []
-
-_price_cache = {"btc": None, "btc_ts": 0}
-
-async def _get_btc_price():
-    now = time.time()
-    if _price_cache["btc"] and (now - _price_cache["btc_ts"]) < 300:
-        return _price_cache["btc"]
-    data = await coingecko.get("/simple/price", params={"ids": "bitcoin", "vs_currencies": "usd"})
-    price = data["bitcoin"]["usd"]
-    _price_cache["btc"] = price
-    _price_cache["btc_ts"] = now
-    return price
-
-async def collect_exchange_volumes():
-    volumes = await fetch_exchange_volumes()
-    if volumes:
-        db = await get_db()
-        for v in volumes:
-            await db.execute(
-                """INSERT OR REPLACE INTO exchange_flows 
-                   (exchange, asset, inflow_usd, outflow_usd, net_flow_usd, timestamp)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (v["exchange"], v["asset"], v["volume_usd"], 0.0, v["volume_usd"], v["timestamp"])
-            )
-        await db.commit()
-        await db.close()
-    return len(volumes)
-```
-
-**Step 2: Commit**
-
-```bash
-git add -A && git commit -m "feat: add exchange volume collector (CoinGecko, on-chain flows pending v2)"
-```
-
----
-
-### Task 2.3: On-Chain API endpoints + background scheduler
-
-**Objective:** Wire up FastAPI routes and start APScheduler for collectors.
-
-**Files:**
-- Create: `backend/app/api/onchain.py`
-- Create: `backend/app/services/scheduler.py`
-- Modify: `backend/main.py`
-
-**Step 1: Write on-chain API routes**
-
-`backend/app/api/onchain.py`:
-```python
-"""On-chain intelligence API routes."""
-from fastapi import APIRouter
-from app.database import get_db
-
-router = APIRouter(prefix="/api/onchain", tags=["onchain"])
-
-@router.get("/whales")
-async def get_whale_txs(limit: int = 20, min_usd: float = 500000):
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT * FROM whale_transactions 
-           WHERE amount_usd >= ? 
-           ORDER BY timestamp DESC LIMIT ?""",
-        (min_usd, limit)
-    )
-    rows = await cursor.fetchall()
-    await db.close()
-    return [dict(r) for r in rows]
-
-@router.get("/exchanges")
-async def get_exchange_volumes(limit: int = 10):
-    db = await get_db()
-    cursor = await db.execute(
-        "SELECT * FROM exchange_flows ORDER BY timestamp DESC LIMIT ?",
-        (limit,)
-    )
-    rows = await cursor.fetchall()
-    await db.close()
-    return [dict(r) for r in rows]
-
-@router.get("/stats")
-async def get_onchain_stats():
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT 
-             COUNT(*) as total_whales,
-             AVG(amount_usd) as avg_amount,
-             MAX(amount_usd) as max_amount
-           FROM whale_transactions
-           WHERE timestamp > strftime('%s', 'now') - 86400"""
-    )
-    stats = dict(await cursor.fetchone())
-    await db.close()
-    return stats
-```
-
-**Step 2: Write scheduler**
-
-`backend/app/services/scheduler.py`:
-```python
-"""Background task scheduler for data collectors."""
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-scheduler = AsyncIOScheduler()
-
-def start_collectors():
-    from app.collectors.whale_collector import collect_whales
-    from app.collectors.exchange_collector import collect_exchange_volumes
-    
-    scheduler.add_job(collect_whales, "interval", minutes=5, id="whales")
-    scheduler.add_job(collect_exchange_volumes, "interval", minutes=15, id="exchanges")
-    scheduler.start()
-```
-
-**Step 3: Update main.py — mount router AND scheduler**
-
-Modify `backend/main.py` — the imports at the top, the router includes BEFORE any static mount:
-
-```python
-from dotenv import load_dotenv
-load_dotenv()
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.database import init_db
-from app.services.scheduler import start_collectors
-from app.api.onchain import router as onchain_router
-
-app = FastAPI(title="Crypto Command Center", version="0.2.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# All API routers MUST be mounted BEFORE any static file mount
-app.include_router(onchain_router)
-
-@app.on_event("startup")
-async def startup():
-    try:
-        await init_db()
-        start_collectors()
-        print("[startup] Database initialized, collectors started")
-    except Exception as e:
-        print(f"[startup] FATAL: {e}")
-        import sys; sys.exit(1)
-
-@app.get("/api/health")
-async def health():
-    return {"status": "ok"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-```
-
-**Step 4: Verify**
-
-```bash
-cd /Users/tn/dev/crypto-dashboard/backend && source venv/bin/activate
-python main.py &
-sleep 3
-curl -s http://localhost:8000/api/onchain/whales | python3 -m json.tool | head -20
-curl -s http://localhost:8000/api/onchain/stats
-kill %1
-```
-
-**Step 5: Commit**
-
-```bash
-git add -A && git commit -m "feat: add on-chain API endpoints with startup error handling and scheduler"
-```
-
----
-
-### Phase 3: AI Sentiment Aggregator
-
----
-
-### Task 3.1: Reddit sentiment collector (with User-Agent + batched LLM calls)
-
-**Objective:** Fetch crypto posts from Reddit, score sentiment via batched OpenAI call or keyword fallback. User-Agent header set to avoid 429s.
-
-**Files:**
-- Create: `backend/app/collectors/sentiment_collector.py`
-
-**Step 1: Write collector**
-
-`backend/app/collectors/sentiment_collector.py`:
-```python
-"""Collect and score crypto sentiment from Reddit."""
-import json
-import os
-from app.database import get_db
-from app.services.http_client import APIClient
-
-# Reddit requires a descriptive User-Agent — provided by APIClient default
-reddit = APIClient(base_url="https://www.reddit.com", rate_limit=0.5)
-
-CRYPTO_SUBREDDITS = ["CryptoCurrency", "Bitcoin", "ethereum", "CryptoMarkets"]
-
-async def fetch_reddit_posts(subreddit: str, limit: int = 25):
-    try:
-        data = await reddit.get(f"/r/{subreddit}/hot.json", params={"limit": limit})
-        posts = data.get("data", {}).get("children", [])
-        results = []
-        for p in posts:
-            d = p["data"]
-            results.append({
-                "title": d["title"],
-                "text": d.get("selftext", "")[:500],
-                "score": d["score"],
-                "num_comments": d["num_comments"],
-                "url": f"https://reddit.com{d['permalink']}",
-                "created_utc": int(d["created_utc"]),
-            })
-        return results
-    except Exception as e:
-        print(f"[sentiment] Reddit error ({subreddit}): {e}")
-        return []
-
-async def score_sentiment_batch(posts: list[dict]) -> list[dict]:
-    """Score all posts in a single batched OpenAI call, or keyword fallback."""
-    if not posts:
-        return []
-    
-    api_key = os.getenv("OPENAI_API_KEY")
-    if api_key:
-        try:
-            from openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=api_key)
-            # Prepare all posts as a single prompt
-            posts_text = "\n---\n".join(
-                f"[{i}] {p['title']}\n{p['text'][:300]}" 
-                for i, p in enumerate(posts)
-            )
-            resp = await client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{
-                    "role": "system",
-                    "content": (
-                        "Score crypto sentiment for each post from -1 (extremely bearish) "
-                        "to 1 (extremely bullish). Return JSON: "
-                        '{"scores": [{"index": int, "score": float, "topic": str, "summary": str}]}'
-                    )
-                }, {
-                    "role": "user",
-                    "content": posts_text[:8000]
-                }],
-                response_format={"type": "json_object"},
-            )
-            result = json.loads(resp.choices[0].message.content)
-            return result.get("scores", [])
-        except Exception as e:
-            print(f"[sentiment] OpenAI error, falling back to keywords: {e}")
-    
-    # Keyword fallback with expanded crypto-specific terms
-    return [keyword_score(p, i) for i, p in enumerate(posts)]
-
-def keyword_score(post: dict, index: int) -> dict:
-    bullish = ["bullish", "moon", "pump", "breakout", "rally", "buy", "long", "green",
-               "wagmi", "ape", "bid", "accumulation", "undervalued", "bottom", "surge",
-               "rocket", "ath", "break", "upside"]
-    bearish = ["bearish", "dump", "crash", "collapse", "sell", "short", "red", "fear",
-               "rekt", "ngmi", "jeet", "capitulation", "liquidated", "top", "correction",
-               "bubble", "dead", "rug", "scam"]
-    text = f"{post['title']} {post['text']}".lower()
-    b_count = sum(1 for w in bullish if w in text)
-    a_count = sum(1 for w in bearish if w in text)
-    total = b_count + a_count
-    score = (b_count - a_count) / max(total, 1)
-    return {
-        "index": index,
-        "score": round(score, 3),
-        "topic": "crypto",
-        "summary": post["title"][:200],
-    }
-
-async def collect_sentiment():
-    posts = []
-    for sub in CRYPTO_SUBREDDITS:
-        posts.extend(await fetch_reddit_posts(sub, limit=10))
-    
-    if not posts:
+        print(f"[btc_whale] Error: {e}")
         return 0
-    
-    scores = await score_sentiment_batch(posts)
-    db = await get_db()
-    count = 0
-    for s in scores:
-        idx = s.get("index", 0)
-        if idx < len(posts):
-            post = posts[idx]
-            await db.execute(
-                """INSERT OR IGNORE INTO sentiment_scores 
-                   (source, topic, score, confidence, summary, url, timestamp)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                ("reddit", s.get("topic", "crypto"),
-                 s["score"], None,
-                 s.get("summary", ""),
-                 post["url"], post["created_utc"])
-            )
-            count += 1
-    
-    await db.commit()
-    await db.close()
-    return count
 ```
 
 **Step 2: Test**
 
 ```bash
 cd /Users/tn/dev/crypto-dashboard/backend && source venv/bin/activate
-python -c "import asyncio; from app.collectors.sentiment_collector import collect_sentiment; n = asyncio.run(collect_sentiment()); print(f'Collected: {n} posts')"
+python -c "import asyncio; from app.collectors.btc_whale_collector import collect; n = asyncio.run(collect()); print(f'Collected: {n}')"
 ```
 
 **Step 3: Commit**
 
 ```bash
-git add -A && git commit -m "feat: add Reddit sentiment collector with batched LLM + expanded keyword fallback"
+git add -A && git commit -m "feat: add BTC whale collector (Blockchain.info mempool)"
 ```
 
 ---
 
-### Task 3.2: Sentiment API + scheduler integration
+### Task 2.2: ETH whale collector (Etherscan, config-driven)
 
-**Objective:** FastAPI routes + add to scheduler.
+**Objective:** Fetch recent transactions for exchange wallets from Etherscan API, filter by USD value, store via WhaleRepository. Wallet list from config.
 
 **Files:**
-- Create: `backend/app/api/sentiment.py`
-- Modify: `backend/main.py`, `backend/app/services/scheduler.py`
-
-**Step 1: Sentiment API routes**
-
-`backend/app/api/sentiment.py`:
-```python
-"""Sentiment analysis API routes."""
-from fastapi import APIRouter
-from app.database import get_db
-
-router = APIRouter(prefix="/api/sentiment", tags=["sentiment"])
-
-@router.get("/scores")
-async def get_scores(limit: int = 30, source: str = None):
-    db = await get_db()
-    query = "SELECT * FROM sentiment_scores"
-    params = []
-    if source:
-        query += " WHERE source = ?"
-        params.append(source)
-    query += " ORDER BY timestamp DESC LIMIT ?"
-    params.append(limit)
-    cursor = await db.execute(query, params)
-    rows = await cursor.fetchall()
-    await db.close()
-    return [dict(r) for r in rows]
-
-@router.get("/trend")
-async def get_sentiment_trend(hours: int = 24):
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT 
-             AVG(score) as avg_score,
-             COUNT(*) as count,
-             MIN(score) as min_score,
-             MAX(score) as max_score
-           FROM sentiment_scores
-           WHERE timestamp > strftime('%s', 'now') - ?""",
-        (hours * 3600,)
-    )
-    row = await cursor.fetchone()
-    await db.close()
-    return dict(row) if row else {"avg_score": 0, "count": 0}
-```
-
-**Step 2: Add to main.py (BEFORE any static mount)**
-
-```python
-from app.api.sentiment import router as sentiment_router
-app.include_router(sentiment_router)
-```
-
-**Step 3: Add to scheduler.py**
-
-In `start_collectors()`:
-```python
-from app.collectors.sentiment_collector import collect_sentiment
-scheduler.add_job(collect_sentiment, "interval", minutes=15, id="sentiment")
-```
-
-**Step 4: Commit**
-
-```bash
-git add -A && git commit -m "feat: add sentiment API endpoints and 15-min scheduler job"
-```
-
----
-
-### Phase 4: Macro × Crypto Overlay
-
----
-
-### Task 4.1: Macro data collector (FRED + CoinGecko, with proper error handling)
-
-**Objective:** Fetch DXY, Fed funds rate, gold, S&P 500 from FRED, overlay with BTC/ETH from CoinGecko. Store observation dates. Skip insertion on failure (never insert 0.0).
-
-**Files:**
-- Create: `backend/app/collectors/macro_collector.py`
+- Create: `backend/app/collectors/eth_whale_collector.py`
 
 **Step 1: Write collector**
 
-`backend/app/collectors/macro_collector.py`:
+`backend/app/collectors/eth_whale_collector.py`:
 ```python
-"""Collect macro indicators from FRED and CoinGecko."""
-import time
+"""Collect whale ETH transactions from Etherscan (config-driven wallet list)."""
+import json
 import os
-from app.database import get_db
+import time
+from pathlib import Path
 from app.services.http_client import APIClient
+from app.repositories.whale_repo import WhaleRepository
 
-fred = APIClient(base_url="https://api.stlouisfed.org/fred", rate_limit=0.5)
+CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "exchange_wallets.json"
+etherscan = APIClient(base_url="https://api.etherscan.io/api", rate_limit=0.2)
 coingecko = APIClient(base_url="https://api.coingecko.com/api/v3", rate_limit=1)
 
-FRED_SERIES = {
-    "DXY": "DTWEXBGS",
-    "FEDFUNDS": "FEDFUNDS",
-    "GOLD": "GOLDAMGBD228NLBR",
-    "SP500": "SP500",
-}
+_price_cache = {"eth": None, "ts": 0}
 
-async def fetch_fred_series(series_id: str) -> dict | None:
-    """Returns {"value": float, "obs_date": str} or None on failure."""
-    api_key = os.getenv("FRED_API_KEY", "")
-    params = {"series_id": series_id, "sort_order": "desc", "limit": 1, "file_type": "json"}
-    if api_key:
-        params["api_key"] = api_key
-    try:
-        data = await fred.get("/series/observations", params=params)
-        obs = data.get("observations", [])
-        if obs and obs[0].get("value") not in (".", "N/A", None, ""):
-            return {"value": float(obs[0]["value"]), "obs_date": obs[0]["date"]}
-    except Exception as e:
-        print(f"[macro] FRED error ({series_id}): {e}")
-    return None
+async def _eth_price():
+    now = time.time()
+    if _price_cache["eth"] and (now - _price_cache["ts"]) < 300:
+        return _price_cache["eth"]
+    data = await coingecko.get("/simple/price", params={"ids": "ethereum", "vs_currencies": "usd"})
+    _price_cache["eth"] = data["ethereum"]["usd"]
+    _price_cache["ts"] = now
+    return _price_cache["eth"]
 
-async def fetch_crypto_prices():
-    try:
-        data = await coingecko.get(
-            "/simple/price",
-            params={"ids": "bitcoin,ethereum", "vs_currencies": "usd"}
-        )
-        return {
-            "BTC": data.get("bitcoin", {}).get("usd"),
-            "ETH": data.get("ethereum", {}).get("usd"),
-        }
-    except Exception as e:
-        print(f"[macro] CoinGecko error: {e}")
-        return {}
+def _load_wallets():
+    with open(CONFIG_PATH) as f:
+        cfg = json.load(f)
+    return cfg.get("eth_wallets", []), cfg.get("eth_min_value_usd", 500000)
 
-async def collect_macro():
-    now = int(time.time())
-    db = await get_db()
-    inserted = 0
+async def collect():
+    api_key = os.getenv("ETHERSCAN_API_KEY", "")
+    wallets, min_usd = _load_wallets()
+    price = await _eth_price()
+    txs = []
+    call_count = 0
     
-    for name, series_id in FRED_SERIES.items():
-        result = await fetch_fred_series(series_id)
-        if result is not None:
-            await db.execute(
-                "INSERT OR REPLACE INTO macro_data (indicator, value, obs_date, timestamp) VALUES (?, ?, ?, ?)",
-                (name, result["value"], result["obs_date"], now)
-            )
-            inserted += 1
+    for wallet in wallets:
+        try:
+            params = {
+                "module": "account", "action": "txlist",
+                "address": wallet["address"], "page": 1, "offset": 5,
+                "sort": "desc", "apikey": api_key,
+            }
+            data = await etherscan.get("", params=params)
+            call_count += 1
+            for tx in data.get("result", [])[:3]:
+                value_eth = int(tx.get("value", 0)) / 1e18
+                value_usd = value_eth * price
+                if value_usd >= min_usd:
+                    txs.append({
+                        "tx_hash": tx["hash"],
+                        "blockchain": "ethereum",
+                        "from_address": tx.get("from"),
+                        "to_address": tx.get("to"),
+                        "amount_usd": round(value_usd, 2),
+                        "asset": "ETH",
+                        "timestamp": int(tx.get("timeStamp", time.time())),
+                    })
+        except Exception as e:
+            print(f"[eth_whale] Error ({wallet['label']}): {e}")
     
-    prices = await fetch_crypto_prices()
-    for asset, price in prices.items():
-        if price:
-            await db.execute(
-                "INSERT OR REPLACE INTO macro_data (indicator, value, timestamp) VALUES (?, ?, ?)",
-                (asset, price, now)
-            )
-            inserted += 1
-    
-    await db.commit()
-    await db.close()
-    return inserted
+    if txs:
+        await WhaleRepository.save(txs)
+        print(f"[eth_whale] Collected {len(txs)} whale txns from {call_count} API calls")
+    return len(txs)
 ```
 
-**Step 2: Commit**
+**Step 2: Test (requires ETHERSCAN_API_KEY in .env)**
 
 ```bash
-git add -A && git commit -m "feat: add macro data collector with proper error handling and obs dates"
+cd /Users/tn/dev/crypto-dashboard/backend && source venv/bin/activate
+python -c "import asyncio; from app.collectors.eth_whale_collector import collect; n = asyncio.run(collect()); print(f'Collected: {n}')"
 ```
-
----
-
-### Task 4.2: Macro API endpoints + scheduler
-
-**Objective:** Routes + integration.
-
-**Files:**
-- Create: `backend/app/api/macro.py`
-- Modify: `backend/main.py`, `backend/app/services/scheduler.py`
-
-**Step 1: Macro API routes with correlation endpoint**
-
-`backend/app/api/macro.py`:
-```python
-"""Macro overlay API routes."""
-from fastapi import APIRouter
-from app.database import get_db
-
-router = APIRouter(prefix="/api/macro", tags=["macro"])
-
-@router.get("/latest")
-async def get_latest_macro():
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT indicator, value, obs_date, MAX(timestamp) as timestamp 
-           FROM macro_data GROUP BY indicator"""
-    )
-    rows = await cursor.fetchall()
-    await db.close()
-    return [dict(r) for r in rows]
-
-@router.get("/history")
-async def get_macro_history(indicator: str = "BTC", hours: int = 168):
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT * FROM macro_data 
-           WHERE indicator = ? 
-           AND timestamp > strftime('%s', 'now') - ?
-           ORDER BY timestamp ASC""",
-        (indicator, hours * 3600)
-    )
-    rows = await cursor.fetchall()
-    await db.close()
-    return [dict(r) for r in rows]
-
-@router.get("/correlation")
-async def get_correlation(pair: str = "BTC-DXY", hours: int = 168):
-    """Compute Pearson correlation between two indicators."""
-    a, b = pair.split("-")
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT indicator, value, timestamp FROM macro_data 
-           WHERE indicator IN (?, ?) AND timestamp > strftime('%s', 'now') - ?
-           ORDER BY timestamp ASC""",
-        (a, b, hours * 3600)
-    )
-    rows = await cursor.fetchall()
-    await db.close()
-    
-    # Align by timestamp bucket (1h)
-    from collections import defaultdict
-    buckets = defaultdict(dict)
-    for r in rows:
-        bucket = r["timestamp"] // 3600
-        buckets[bucket][r["indicator"]] = r["value"]
-    
-    vals_a, vals_b = [], []
-    for bucket in sorted(buckets.keys()):
-        if a in buckets[bucket] and b in buckets[bucket]:
-            vals_a.append(buckets[bucket][a])
-            vals_b.append(buckets[bucket][b])
-    
-    if len(vals_a) < 3:
-        return {"pair": pair, "correlation": None, "data_points": len(vals_a)}
-    
-    mean_a = sum(vals_a) / len(vals_a)
-    mean_b = sum(vals_b) / len(vals_b)
-    num = sum((va - mean_a) * (vb - mean_b) for va, vb in zip(vals_a, vals_b))
-    den = (sum((v - mean_a)**2 for v in vals_a) * sum((v - mean_b)**2 for v in vals_b)) ** 0.5
-    r = num / den if den else 0
-    return {"pair": pair, "correlation": round(r, 4), "data_points": len(vals_a)}
-```
-
-**Step 2: Add to main.py and scheduler**
-
-Same pattern — add router import and `app.include_router()`. In scheduler:
-```python
-from app.collectors.macro_collector import collect_macro
-scheduler.add_job(collect_macro, "interval", hours=1, id="macro")
-```
+**Note:** Test will work without API key (rate-limited but functional).
 
 **Step 3: Commit**
 
 ```bash
-git add -A && git commit -m "feat: add macro overlay API with correlation endpoint"
+git add -A && git commit -m "feat: add ETH whale collector (Etherscan, 10 config-driven wallets)"
 ```
 
 ---
 
-### Phase 5: Stablecoin Flow Tracker
+### Task 2.3: Stablecoin supply collector (with deltas)
 
----
-
-### Task 5.1: Stablecoin supply collector (with deltas, single schema)
-
-**Objective:** Track USDT/USDC/DAI/USDe supply from DefiLlama, compute 24h change deltas, single insertion path.
+**Objective:** Fetch USDT/USDC/DAI/USDe supply from DefiLlama, compute 24h change, store via StablecoinRepository.
 
 **Files:**
 - Create: `backend/app/collectors/stablecoin_collector.py`
 
-**Step 1: Write collector with delta computation**
+**Step 1: Write collector**
 
 `backend/app/collectors/stablecoin_collector.py`:
 ```python
-"""Track stablecoin supply and 24h changes from DefiLlama."""
+"""Track stablecoin supply from DefiLlama with delta computation."""
 import time
-from app.database import get_db
 from app.services.http_client import APIClient
+from app.repositories.stablecoin_repo import StablecoinRepository
 
 llama = APIClient(base_url="https://stablecoins.llama.fi", rate_limit=0.5)
+TRACKED = ["USDT", "USDC", "DAI", "USDe"]
 
-TRACKED_STABLECOINS = ["USDT", "USDC", "DAI", "USDe"]
-
-async def fetch_stablecoin_supply():
-    """Fetch current stablecoin supply from DefiLlama."""
+async def collect():
     try:
         data = await llama.get("/stablecoins")
         pegged = data.get("peggedAssets", [])
-        results = {}
+        current = {}
         for asset in pegged:
             symbol = asset.get("symbol", "")
-            if symbol in TRACKED_STABLECOINS:
-                circulating = asset.get("circulating", {}).get("peggedUSD", 0)
-                chains = list(asset.get("chainBalances", {}).keys())
-                results[symbol] = {
-                    "stablecoin": symbol,
-                    "total_supply_usd": circulating,
-                    "chains": chains,
+            if symbol in TRACKED:
+                current[symbol] = {
+                    "total_supply_usd": asset.get("circulating", {}).get("peggedUSD", 0),
+                    "chains": ",".join(list(asset.get("chainBalances", {}).keys())[:5]),
                 }
-        return results
+        
+        # Compute deltas from previous reading
+        previous = await StablecoinRepository.get_previous_supply()
+        now = int(time.time())
+        for symbol, data in current.items():
+            prev = previous.get(symbol, data["total_supply_usd"])
+            data["change_24h_usd"] = round(data["total_supply_usd"] - prev, 2)
+            data["timestamp"] = now
+        
+        await StablecoinRepository.save_supply(current)
+        print(f"[stablecoin] Updated {len(current)} stablecoins")
+        return len(current)
     except Exception as e:
-        print(f"[stablecoin] API error: {e}")
-        return {}
-
-async def collect_stablecoins():
-    now = int(time.time())
-    db = await get_db()
-    
-    # Get current supply
-    current = await fetch_stablecoin_supply()
-    
-    # Get previous reading (24h ago or most recent)
-    cursor = await db.execute(
-        """SELECT stablecoin, total_supply_usd, MAX(timestamp) as ts
-           FROM stablecoin_supply GROUP BY stablecoin"""
-    )
-    prev_rows = await cursor.fetchall()
-    previous = {r["stablecoin"]: r["total_supply_usd"] for r in prev_rows}
-    
-    count = 0
-    for symbol, data in current.items():
-        prev_supply = previous.get(symbol, data["total_supply_usd"])
-        change_24h = data["total_supply_usd"] - prev_supply
-        await db.execute(
-            """INSERT OR REPLACE INTO stablecoin_supply 
-               (stablecoin, total_supply_usd, change_24h_usd, chains, timestamp)
-               VALUES (?, ?, ?, ?, ?)""",
-            (symbol, data["total_supply_usd"], round(change_24h, 2),
-             ",".join(data["chains"][:5]), now)
-        )
-        count += 1
-    
-    await db.commit()
-    await db.close()
-    return count
+        print(f"[stablecoin] Error: {e}")
+        return 0
 ```
 
-**Step 2: Commit**
+**Step 2: Test**
+
+```bash
+cd /Users/tn/dev/crypto-dashboard/backend && source venv/bin/activate
+python -c "import asyncio; from app.collectors.stablecoin_collector import collect; n = asyncio.run(collect()); print(f'Updated: {n}')"
+```
+
+**Step 3: Commit**
 
 ```bash
 git add -A && git commit -m "feat: add stablecoin supply collector with 24h delta computation"
@@ -1341,237 +928,257 @@ git add -A && git commit -m "feat: add stablecoin supply collector with 24h delt
 
 ---
 
-### Task 5.2: Stablecoin API + scheduler
+### Task 2.4: Background scheduler
 
-**Objective:** Routes + integration.
+**Objective:** APScheduler running all three collectors on their intervals.
+
+**Files:**
+- Create: `backend/app/services/scheduler.py`
+
+**Step 1: Write scheduler**
+
+`backend/app/services/scheduler.py`:
+```python
+"""Background task scheduler for Phase 1a collectors."""
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+scheduler = AsyncIOScheduler()
+
+def start_collectors():
+    from app.collectors.btc_whale_collector import collect as collect_btc
+    from app.collectors.eth_whale_collector import collect as collect_eth
+    from app.collectors.stablecoin_collector import collect as collect_stable
+    
+    scheduler.add_job(collect_btc, "interval", minutes=5, id="btc_whales")
+    scheduler.add_job(collect_eth, "interval", minutes=5, id="eth_whales")
+    scheduler.add_job(collect_stable, "interval", minutes=30, id="stablecoins")
+    scheduler.start()
+    print("[scheduler] Collectors started: BTC(5m), ETH(5m), Stablecoin(30m)")
+```
+
+**Step 2: Connect to main.py**
+
+Update `backend/main.py` — add after imports and before routes:
+
+```python
+from app.database import init_db
+from app.services.scheduler import start_collectors
+
+@app.on_event("startup")
+async def startup():
+    try:
+        await init_db()
+        start_collectors()
+        print("[startup] Database ready, collectors running")
+    except Exception as e:
+        print(f"[startup] FATAL: {e}")
+        import sys; sys.exit(1)
+```
+
+**Step 3: Verify scheduler starts**
+
+```bash
+cd /Users/tn/dev/crypto-dashboard/backend && source venv/bin/activate
+python main.py &
+sleep 5
+# Check logs for collector output
+kill %1
+```
+
+**Step 4: Commit**
+
+```bash
+git add -A && git commit -m "feat: add background scheduler — BTC/ETH whales (5m), stablecoin (30m)"
+```
+
+---
+
+## Phase 3: API Layer
+
+---
+
+### Task 3.1: On-Chain API endpoints
+
+**Objective:** REST endpoints for whale transactions + exchange volumes + stats.
+
+**Files:**
+- Create: `backend/app/api/onchain.py`
+
+**Step 1: Write routes**
+
+`backend/app/api/onchain.py`:
+```python
+"""On-chain intelligence API routes."""
+from fastapi import APIRouter, Query
+from app.repositories.whale_repo import WhaleRepository
+
+router = APIRouter(prefix="/api/onchain", tags=["onchain"])
+
+@router.get("/whales")
+async def get_whales(limit: int = 20, min_usd: float = 500000, blockchain: str = None):
+    return await WhaleRepository.get_recent(limit=limit, min_usd=min_usd, blockchain=blockchain)
+
+@router.get("/stats")
+async def get_stats():
+    return await WhaleRepository.get_stats(hours=24) 
+```
+
+**Step 2: Add to main.py**
+
+```python
+from app.api.onchain import router as onchain_router
+app.include_router(onchain_router)  # BEFORE any static mount
+```
+
+**Step 3: Verify**
+
+```bash
+cd /Users/tn/dev/crypto-dashboard/backend && source venv/bin/activate
+python main.py &
+sleep 3
+curl -s http://127.0.0.1:8000/api/onchain/whales?limit=3 | python3 -m json.tool
+curl -s http://127.0.0.1:8000/api/onchain/stats
+kill %1
+```
+
+**Step 4: Commit**
+
+```bash
+git add -A && git commit -m "feat: add on-chain API endpoints (whales + stats)"
+```
+
+---
+
+### Task 3.2: Stablecoin API endpoints
+
+**Objective:** Supply + history endpoints.
 
 **Files:**
 - Create: `backend/app/api/stablecoin.py`
-- Modify: `backend/main.py`, `backend/app/services/scheduler.py`
 
-**Step 1: Stablecoin API routes**
+**Step 1: Write routes**
 
 `backend/app/api/stablecoin.py`:
 ```python
 """Stablecoin flow API routes."""
 from fastapi import APIRouter
-from app.database import get_db
+from app.repositories.stablecoin_repo import StablecoinRepository
 
 router = APIRouter(prefix="/api/stablecoin", tags=["stablecoin"])
 
 @router.get("/supply")
-async def get_current_supply():
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT stablecoin, total_supply_usd, change_24h_usd, chains,
-                  MAX(timestamp) as timestamp 
-           FROM stablecoin_supply GROUP BY stablecoin"""
-    )
-    rows = await cursor.fetchall()
-    await db.close()
-    return [dict(r) for r in rows]
+async def get_supply():
+    return await StablecoinRepository.get_latest()
 
 @router.get("/history")
-async def get_supply_history(stablecoin: str = "USDT", hours: int = 168):
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT * FROM stablecoin_supply 
-           WHERE stablecoin = ? AND timestamp > strftime('%s', 'now') - ?
-           ORDER BY timestamp ASC""",
-        (stablecoin, hours * 3600)
-    )
-    rows = await cursor.fetchall()
-    await db.close()
-    return [dict(r) for r in rows]
+async def get_history(stablecoin: str = "USDT", hours: int = 168):
+    return await StablecoinRepository.get_history(stablecoin=stablecoin, hours=hours)
 ```
 
-**Step 2: Add to main.py and scheduler**
+**Step 2: Add to main.py**
 
 ```python
 from app.api.stablecoin import router as stablecoin_router
 app.include_router(stablecoin_router)
-
-# scheduler:
-from app.collectors.stablecoin_collector import collect_stablecoins
-scheduler.add_job(collect_stablecoins, "interval", minutes=30, id="stablecoins")
 ```
 
-**Step 3: Commit**
+**Step 3: Verify + commit**
 
 ```bash
-git add -A && git commit -m "feat: add stablecoin supply API with history endpoint"
+curl -s http://127.0.0.1:8000/api/stablecoin/supply | python3 -m json.tool
+```
+
+```bash
+git add -A && git commit -m "feat: add stablecoin API endpoints (supply + history)"
 ```
 
 ---
 
-### Phase 6: Signal Confluence Engine
+### Task 3.3: Confluence engine (2-signal, CALIBRATING logic, 4 states, narrative)
 
----
-
-### Task 6.1: Confluence scoring engine (FIXED — all bugs resolved)
-
-**Objective:** Combine signals from all four panels with directional awareness. Correct the three critical bugs: sentiment not zeroed, stablecoin uses latest supply, macro uses all indicators.
+**Objective:** Signal confluence engine for Phase 1a — whales + stablecoin only. Implements the Session 1A AND-gate calibration logic. Produces narrative summary.
 
 **Files:**
 - Create: `backend/app/services/confluence.py`
 
-**Step 1: Write corrected engine**
+**Step 1: Write engine**
 
 `backend/app/services/confluence.py`:
 ```python
-"""Signal confluence engine — combines all four panels with directional awareness."""
+"""2-signal confluence engine with calibration AND-gate and narrative generation."""
 import json
+import time
+from app.repositories.whale_repo import WhaleRepository
+from app.repositories.stablecoin_repo import StablecoinRepository
 from app.database import get_db
 
-WEIGHTS = {
-    "whale_activity": 0.20,
-    "sentiment": 0.25,
-    "macro_alignment": 0.25,
-    "stablecoin_flow": 0.30,
-}
+WEIGHTS = {"whale_activity": 0.55, "stablecoin_flow": 0.45}
 
-async def compute_whale_score() -> tuple[float, str]:
+# Calibration thresholds (Session 1A)
+MIN_DATA_POINTS = 100
+MIN_RUNTIME_HOURS = 48
+FRESHNESS_HOURS = 1
+
+_start_time = time.time()
+
+async def _check_calibration() -> dict:
+    """Returns calibration status and progress."""
+    whale_data = await WhaleRepository.count_recent(hours=99999)  # all-time
+    supply_data = await StablecoinRepository.get_latest()
+    
+    whale_count = whale_data.get("count", 0) or 0
+    supply_count = len(supply_data) * (await _estimate_supply_readings())
+    
+    runtime_hours = (time.time() - _start_time) / 3600
+    
+    # Freshness: at least one reading in last hour
+    whale_fresh = await WhaleRepository.count_recent(hours=FRESHNESS_HOURS)
+    supply_fresh = len(await StablecoinRepository.get_latest()) > 0
+    
+    conditions = {
+        "whale_datapoints": {"met": whale_count >= MIN_DATA_POINTS, "current": whale_count, "target": MIN_DATA_POINTS},
+        "stablecoin_datapoints": {"met": supply_count >= MIN_DATA_POINTS, "current": supply_count, "target": MIN_DATA_POINTS},
+        "runtime": {"met": runtime_hours >= MIN_RUNTIME_HOURS, "current": round(runtime_hours, 1), "target": MIN_RUNTIME_HOURS},
+        "freshness": {"met": (whale_fresh.get("count", 0) or 0) > 0 and supply_fresh},
+    }
+    
+    all_met = all(c["met"] for c in conditions.values())
+    return {
+        "calibrated": all_met,
+        "conditions_met": sum(1 for c in conditions.values() if c["met"]),
+        "conditions_total": len(conditions),
+        "conditions": conditions,
+    }
+
+async def _estimate_supply_readings():
+    """Estimate stablecoin readings from DB record count."""
     db = await get_db()
-    cursor = await db.execute(
-        """SELECT COUNT(*) as count, AVG(amount_usd) as avg_amount
-           FROM whale_transactions 
-           WHERE timestamp > strftime('%s', 'now') - 3600"""
-    )
+    cursor = await db.execute("SELECT COUNT(DISTINCT timestamp) as cnt FROM stablecoin_supply")
     row = await cursor.fetchone()
     await db.close()
-    count = row["count"] or 0
-    avg = row["avg_amount"] or 0
-    if count > 10 and avg > 5_000_000:
-        return (0.8, f"High whale activity: {count} txns, avg ${avg:,.0f}")
-    elif count > 5:
-        return (0.5, f"Moderate whale activity: {count} txns")
-    elif count > 0:
-        return (0.2, f"Low whale activity: {count} txns")
-    return (0.0, "No recent whale activity")
-
-async def compute_sentiment_score() -> tuple[float, str]:
-    """FIXED: Negative sentiment LOWERS the score (no max(0, avg) clamp)."""
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT AVG(score) as avg_score, COUNT(*) as count
-           FROM sentiment_scores
-           WHERE timestamp > strftime('%s', 'now') - 7200"""
-    )
-    row = await cursor.fetchone()
-    await db.close()
-    avg = row["avg_score"] or 0
-    count = row["count"] or 0
-    # Map [-1, 1] to [0, 1] for consistent scoring
-    # avg=-1 → 0.0 (extreme fear), avg=0 → 0.5 (neutral), avg=1 → 1.0 (extreme greed)
-    normalized = (avg + 1) / 2
-    return (round(normalized, 3), f"Sentiment: {avg:+.2f} over {count} posts")
-
-async def compute_macro_score() -> tuple[float, str]:
-    """FIXED: Uses all indicators, not just DXY."""
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT indicator, value FROM macro_data 
-           WHERE indicator IN ('DXY', 'FEDFUNDS', 'GOLD', 'SP500')
-           AND timestamp > strftime('%s', 'now') - 86400
-           GROUP BY indicator HAVING MAX(timestamp)"""
-    )
-    rows = {r["indicator"]: r["value"] for r in await cursor.fetchall()}
-    await db.close()
-    
-    signals = []
-    details = []
-    
-    # DXY: weakening USD = bullish for crypto
-    dxy = rows.get("DXY", 100)
-    if dxy < 100:
-        signals.append(0.8)
-        details.append(f"DXY {dxy:.1f} (weak)")
-    elif dxy < 105:
-        signals.append(0.5)
-        details.append(f"DXY {dxy:.1f} (neutral)")
-    else:
-        signals.append(0.3)
-        details.append(f"DXY {dxy:.1f} (strong)")
-    
-    # Fed Funds: lower rates = bullish
-    fed = rows.get("FEDFUNDS", 5)
-    if fed < 3:
-        signals.append(0.8)
-        details.append(f"Rates {fed:.2f}% (low)")
-    elif fed < 5:
-        signals.append(0.5)
-        details.append(f"Rates {fed:.2f}% (moderate)")
-    else:
-        signals.append(0.3)
-        details.append(f"Rates {fed:.2f}% (high)")
-    
-    # Gold: rising gold often precedes BTC moves
-    gold = rows.get("GOLD", 2000)
-    if gold > 2500:
-        signals.append(0.7)
-        details.append(f"Gold ${gold:,.0f} (elevated)")
-    else:
-        signals.append(0.5)
-        details.append(f"Gold ${gold:,.0f}")
-    
-    # SP500: risk-on environment
-    sp500 = rows.get("SP500", 5000)
-    if sp500 > 5500:
-        signals.append(0.7)
-        details.append(f"SP500 {sp500:,.0f} (risk-on)")
-    else:
-        signals.append(0.5)
-        details.append(f"SP500 {sp500:,.0f}")
-    
-    score = sum(signals) / len(signals) if signals else 0.5
-    return (round(score, 3), " | ".join(details))
-
-async def compute_stablecoin_score() -> tuple[float, str]:
-    """FIXED: Uses latest supply reading per stablecoin, not SUM of all readings."""
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT stablecoin, total_supply_usd, change_24h_usd,
-                  MAX(timestamp) as timestamp
-           FROM stablecoin_supply 
-           WHERE timestamp > strftime('%s', 'now') - 86400
-           GROUP BY stablecoin"""
-    )
-    rows = await cursor.fetchall()
-    await db.close()
-    
-    total_supply = sum(r["total_supply_usd"] or 0 for r in rows)
-    total_change = sum(r["change_24h_usd"] or 0 for r in rows)
-    
-    # Growing supply = buying power entering market
-    if total_change > 2_000_000_000:  # +$2B in 24h
-        return (0.8, f"Supply growing fast (+${total_change/1e9:.1f}B), total ${total_supply/1e9:.1f}B")
-    elif total_change > 0:
-        return (0.6, f"Supply growing (+${total_change/1e6:.0f}M), total ${total_supply/1e9:.1f}B")
-    elif total_change > -1_000_000_000:
-        return (0.4, f"Supply stable, total ${total_supply/1e9:.1f}B")
-    else:
-        return (0.2, f"Supply contracting (${total_change/1e9:.1f}B), total ${total_supply/1e9:.1f}B")
+    return row["cnt"] if row else 0
 
 async def compute_confluence() -> dict:
-    """Compute overall confluence with directional awareness."""
-    whale_score, whale_desc = await compute_whale_score()
-    sentiment_score, sent_desc = await compute_sentiment_score()
-    macro_score, macro_desc = await compute_macro_score()
-    stable_score, stable_desc = await compute_stablecoin_score()
+    calibration = await _check_calibration()
+    now = int(time.time())
     
-    overall = (
-        whale_score * WEIGHTS["whale_activity"] +
-        sentiment_score * WEIGHTS["sentiment"] +
-        macro_score * WEIGHTS["macro_alignment"] +
-        stable_score * WEIGHTS["stablecoin_flow"]
-    )
+    if not calibration["calibrated"]:
+        return {
+            "overall_score": 0.0,
+            "signal": "CALIBRATING",
+            "direction": "STABLE",
+            "calibration_status": "calibrating",
+            "calibration_progress": calibration,
+            "narrative": _calibration_narrative(calibration),
+            "components": [],
+            "timestamp": now,
+        }
     
-    components = [
-        {"name": "Whale Activity", "score": round(whale_score, 2), "detail": whale_desc},
-        {"name": "Sentiment", "score": round(sentiment_score, 2), "detail": sent_desc},
-        {"name": "Macro", "score": round(macro_score, 2), "detail": macro_desc},
-        {"name": "Stablecoin Flows", "score": round(stable_score, 2), "detail": stable_desc},
-    ]
+    # Compute signals
+    whale_score, whale_desc = await _whale_signal()
+    stable_score, stable_desc = await _stablecoin_signal()
+    
+    overall = whale_score * WEIGHTS["whale_activity"] + stable_score * WEIGHTS["stablecoin_flow"]
     
     if overall > 0.65:
         signal = "STRONG"
@@ -1580,76 +1187,126 @@ async def compute_confluence() -> dict:
     else:
         signal = "WEAK"
     
-    # Get previous score for directional awareness
+    # Direction
     db = await get_db()
-    cursor = await db.execute(
-        "SELECT overall_score FROM signal_confluences ORDER BY timestamp DESC LIMIT 1"
-    )
+    cursor = await db.execute("SELECT overall_score FROM signal_confluences WHERE calibration_status='calibrated' ORDER BY timestamp DESC LIMIT 1")
     prev = await cursor.fetchone()
     await db.close()
     prev_score = prev["overall_score"] if prev else overall
     delta = overall - prev_score
-    if delta > 0.05:
-        direction = "RISING"
-    elif delta < -0.05:
-        direction = "FALLING"
-    else:
-        direction = "STABLE"
+    direction = "RISING" if delta > 0.05 else "FALLING" if delta < -0.05 else "STABLE"
     
-    result = {
-        "overall_score": round(overall, 3),
-        "signal": signal,
-        "direction": direction,
-        "components": components,
-        "timestamp": int(__import__("time").time()),
-    }
+    components = [
+        {"name": "Whale Activity", "score": round(whale_score, 2), "detail": whale_desc},
+        {"name": "Stablecoin Flows", "score": round(stable_score, 2), "detail": stable_desc},
+    ]
     
-    # Store historical snapshot
+    narrative = _generate_narrative(whale_score, stable_score, signal, direction)
+    
+    # Store snapshot
     db = await get_db()
     await db.execute(
-        "INSERT INTO signal_confluences (overall_score, signal, direction, components, timestamp) VALUES (?, ?, ?, ?, ?)",
-        (result["overall_score"], result["signal"], result["direction"],
-         json.dumps(result["components"]), result["timestamp"])
+        "INSERT INTO signal_confluences (overall_score, signal, direction, calibration_status, narrative, components, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (round(overall, 3), signal, direction, "calibrated", narrative, json.dumps(components), now)
     )
     await db.commit()
     await db.close()
     
-    return result
+    return {
+        "overall_score": round(overall, 3),
+        "signal": signal,
+        "direction": direction,
+        "calibration_status": "calibrated",
+        "narrative": narrative,
+        "components": components,
+        "timestamp": now,
+    }
+
+async def _whale_signal() -> tuple[float, str]:
+    data = await WhaleRepository.count_recent(hours=1)
+    count = data.get("count", 0) or 0
+    avg = data.get("avg_amount", 0) or 0
+    if count > 10 and avg > 5_000_000:
+        return (0.8, f"{count} large txns, avg ${avg:,.0f}")
+    elif count > 5:
+        return (0.5, f"{count} significant txns")
+    elif count > 0:
+        return (0.2, f"{count} txns detected")
+    return (0.0, "No recent whale activity")
+
+async def _stablecoin_signal() -> tuple[float, str]:
+    supply = await StablecoinRepository.get_latest()
+    total = sum(s["total_supply_usd"] or 0 for s in supply)
+    total_change = sum(s["change_24h_usd"] or 0 for s in supply)
+    if total_change > 2_000_000_000:
+        return (0.8, f"Supply growing fast (+${total_change/1e9:.1f}B), total ${total/1e9:.1f}B")
+    elif total_change > 0:
+        return (0.6, f"Supply growing (+${total_change/1e6:.0f}M), total ${total/1e9:.1f}B")
+    elif total_change > -1_000_000_000:
+        return (0.4, f"Supply stable, total ${total/1e9:.1f}B")
+    else:
+        return (0.2, f"Supply contracting (${total_change/1e9:.1f}B), total ${total/1e9:.1f}B")
+
+def _calibration_narrative(cal: dict) -> str:
+    met = cal["conditions_met"]
+    total = cal["conditions_total"]
+    return f"Calibrating ({met}/{total}): collecting data to establish signal baselines"
+
+def _generate_narrative(whale: float, stable: float, signal: str, direction: str) -> str:
+    parts = []
+    if whale > 0.6:
+        parts.append("Whales accumulating")
+    elif whale > 0.3:
+        parts.append("Moderate whale activity")
+    else:
+        parts.append("Whales quiet")
+    
+    if stable > 0.6:
+        parts.append("stablecoin supply growing")
+    elif stable > 0.3:
+        parts.append("stablecoin supply stable")
+    else:
+        parts.append("stablecoin supply contracting")
+    
+    return f"{', '.join(parts)} — {signal} {direction}"
 ```
 
-**Step 2: Verify the three fixes work**
+**Step 2: Test**
 
 ```bash
 cd /Users/tn/dev/crypto-dashboard/backend && source venv/bin/activate
 python -c "import asyncio; from app.services.confluence import compute_confluence; r = asyncio.run(compute_confluence()); import json; print(json.dumps(r, indent=2))"
-# Verify: sentiment score is between 0-1 (not always ≥0.5), stablecoin shows a reasonable number, macro has 4-part details
+# Expected during calibration: signal=CALIBRATING, calibration_progress populated
 ```
 
 **Step 3: Commit**
 
 ```bash
-git add -A && git commit -m "feat: add corrected confluence engine with directional awareness and historical storage"
+git add -A && git commit -m "feat: add 2-signal confluence engine with AND-gate calibration and narrative generation"
 ```
 
 ---
 
-### Task 6.2: Confluence API + unified WebSocket (all panels live)
+### Task 3.4: Signals API + authenticated WebSocket
 
-**Objective:** REST endpoint for confluence + WebSocket pushes ALL panel data, not just confluence.
+**Objective:** REST endpoint for confluence, history endpoint, WebSocket with token auth, broadcast all panel data.
 
 **Files:**
 - Create: `backend/app/api/signals.py`
-- Modify: `backend/main.py`
+- Modify: `backend/main.py` (add router + WS auth import)
 
-**Step 1: Unified WebSocket + REST routes**
+**Step 1: Write signals API**
 
 `backend/app/api/signals.py`:
 ```python
-"""Signal confluence API + unified WebSocket for all panels."""
+"""Signal API + authenticated WebSocket."""
 import json
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from app.services.confluence import compute_confluence
+from app.repositories.whale_repo import WhaleRepository
+from app.repositories.stablecoin_repo import StablecoinRepository
 from app.database import get_db
+from main import WS_AUTH_TOKEN
 
 router = APIRouter(tags=["signals"])
 
@@ -1658,71 +1315,38 @@ async def get_confluence():
     return await compute_confluence()
 
 @router.get("/api/signals/history")
-async def get_signal_history(limit: int = 50):
+async def get_history(limit: int = 50):
     db = await get_db()
-    cursor = await db.execute(
-        "SELECT * FROM signal_confluences ORDER BY timestamp DESC LIMIT ?",
-        (limit,)
-    )
+    cursor = await db.execute("SELECT * FROM signal_confluences ORDER BY timestamp DESC LIMIT ?", (limit,))
     rows = await cursor.fetchall()
     await db.close()
     return [dict(r) for r in rows]
 
-# WebSocket management
 connected_ws = set()
 
 @router.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
+async def websocket_endpoint(ws: WebSocket, token: str = Query(None)):
+    if token != WS_AUTH_TOKEN:
+        await ws.close(code=4001, reason="Invalid token")
+        return
     await ws.accept()
     connected_ws.add(ws)
     try:
         while True:
-            await ws.receive_text()  # keep-alive
-            # Client can send "ping" or "refresh" to get full state
-    except Exception:
+            await ws.receive_text()
+    except WebSocketDisconnect:
         pass
     finally:
         connected_ws.discard(ws)
 
 async def broadcast_full_state():
-    """Push confluence + all panel summaries to every connected client."""
     if not connected_ws:
         return
-    
     confluence = await compute_confluence()
-    db = await get_db()
+    whales = await WhaleRepository.get_recent(limit=5)
+    stablecoins = await StablecoinRepository.get_latest()
     
-    # Gather panel snapshots
-    w_cursor = await db.execute(
-        "SELECT * FROM whale_transactions ORDER BY timestamp DESC LIMIT 5"
-    )
-    whales = [dict(r) for r in await w_cursor.fetchall()]
-    
-    s_cursor = await db.execute(
-        "SELECT AVG(score) as avg_score, COUNT(*) as count FROM sentiment_scores WHERE timestamp > strftime('%s', 'now') - 7200"
-    )
-    sentiment = dict(await s_cursor.fetchone())
-    
-    m_cursor = await db.execute(
-        "SELECT indicator, value FROM macro_data WHERE indicator IN ('DXY','BTC','SP500','GOLD') GROUP BY indicator HAVING MAX(timestamp)"
-    )
-    macro = {r["indicator"]: r["value"] for r in await m_cursor.fetchall()}
-    
-    sc_cursor = await db.execute(
-        "SELECT stablecoin, total_supply_usd, change_24h_usd FROM stablecoin_supply GROUP BY stablecoin HAVING MAX(timestamp)"
-    )
-    stablecoins = [dict(r) for r in await sc_cursor.fetchall()]
-    
-    await db.close()
-    
-    payload = json.dumps({
-        "confluence": confluence,
-        "whales": whales,
-        "sentiment": sentiment,
-        "macro": macro,
-        "stablecoins": stablecoins,
-    })
-    
+    payload = json.dumps({"confluence": confluence, "whales": whales, "stablecoins": stablecoins})
     dead = set()
     for ws in connected_ws:
         try:
@@ -1746,51 +1370,129 @@ scheduler.add_job(broadcast_full_state, "interval", minutes=1, id="ws_broadcast"
 **Step 3: Commit**
 
 ```bash
-git add -A && git commit -m "feat: add unified WebSocket broadcasting all panel data every 60s"
+git add -A && git commit -m "feat: add signals API + authenticated WebSocket with token auth"
 ```
 
 ---
 
-### Phase 7: Frontend Dashboard
+### Task 3.5: Final main.py assembly
+
+**Objective:** All routers mounted BEFORE static mount. Correct order: API routers first, static mount last.
+
+`backend/main.py` final structure:
+
+```python
+"""Crypto Command Center — FastAPI backend."""
+import os, secrets
+from dotenv import load_dotenv; load_dotenv()
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+
+app = FastAPI(title="Crypto Command Center", version="0.3.0")
+
+app.add_middleware(CORSMiddleware, allow_origins=[
+    "http://localhost:8000", "http://localhost:5173",
+    "http://127.0.0.1:8000", "http://127.0.0.1:5173",
+], allow_methods=["GET", "POST"], allow_headers=["*"])
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:;"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+app.add_middleware(SecurityHeadersMiddleware)
+
+WS_AUTH_TOKEN = secrets.token_urlsafe(32)
+print(f"[security] WS token: {WS_AUTH_TOKEN}")
+
+# === IMPORTS (after security config) ===
+from app.database import init_db
+from app.services.scheduler import start_collectors
+from app.api.onchain import router as onchain_router
+from app.api.stablecoin import router as stablecoin_router
+from app.api.signals import router as signals_router, broadcast_full_state
+
+# === API ROUTERS (before static mount) ===
+app.include_router(onchain_router)
+app.include_router(stablecoin_router)
+app.include_router(signals_router)
+
+@app.on_event("startup")
+async def startup():
+    try:
+        await init_db()
+        start_collectors()
+        # Add WS broadcast
+        from app.services.scheduler import scheduler
+        scheduler.add_job(broadcast_full_state, "interval", minutes=1, id="ws_broadcast")
+        print("[startup] Ready")
+    except Exception as e:
+        print(f"[startup] FATAL: {e}"); import sys; sys.exit(1)
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "version": "0.3.0"}
+
+# === STATIC MOUNT (LAST) ===
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+fb = Path(__file__).parent.parent / "frontend" / "dist"
+if fb.exists():
+    app.mount("/", StaticFiles(directory=str(fb), html=True), name="frontend")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+```
+
+**Step 2: Full-stack verification**
+
+```bash
+cd /Users/tn/dev/crypto-dashboard
+cd frontend && npm run build && cd ..
+cd backend && source venv/bin/activate && python main.py &
+sleep 3
+curl -s http://127.0.0.1:8000/api/health
+curl -s http://127.0.0.1:8000/api/signals/confluence | python3 -m json.tool | head -15
+curl -s http://127.0.0.1:8000/ | head -5  # should serve React
+kill %1
+```
+
+**Step 3: Commit**
+
+```bash
+git add -A && git commit -m "feat: assemble all Phase 1a API routers with correct mount order"
+```
 
 ---
 
-### Task 7.1: Dashboard shell + responsive layout
+## Phase 4: Frontend (Phase 1a)
 
-**Objective:** Create the React dashboard shell with 2×2 grid, dark theme, responsive stacking.
+---
+
+### Task 4.1: Global CSS + Dashboard shell
+
+**Objective:** Dark theme, responsive grid, SignalBar hero layout.
 
 **Files:**
-- Create: `frontend/src/App.jsx`
 - Create: `frontend/src/index.css`
+- Create: `frontend/src/App.jsx`
 - Create: `frontend/src/components/Dashboard.jsx`
 - Create: `frontend/src/components/Panel.jsx`
-
-**Step 1: Write global CSS with Tailwind**
 
 `frontend/src/index.css`:
 ```css
 @import "tailwindcss";
-
 :root {
-  --bg-primary: #0a0a0f;
-  --bg-card: #13131a;
-  --border-color: #1e1e2e;
-  --accent-cyan: #06b6d4;
-  --accent-green: #10b981;
-  --accent-red: #ef4444;
-  --accent-amber: #f59e0b;
-  --text-primary: #e2e8f0;
-  --text-secondary: #94a3b8;
+  --bg-primary: #0a0a0f; --bg-card: #13131a; --border-color: #1e1e2e;
+  --accent-cyan: #06b6d4; --accent-green: #10b981; --accent-amber: #f59e0b; --accent-red: #ef4444;
+  --text-primary: #e2e8f0; --text-secondary: #94a3b8;
 }
-
-body {
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-family: 'Inter', system-ui, sans-serif;
-}
+body { background: var(--bg-primary); color: var(--text-primary); font-family: 'Inter', system-ui, sans-serif; }
 ```
-
-**Step 2: Panel component**
 
 `frontend/src/components/Panel.jsx`:
 ```jsx
@@ -1804,31 +1506,23 @@ export default function Panel({ title, children, className = "" }) {
 }
 ```
 
-**Step 3: Dashboard grid — responsive**
-
 `frontend/src/components/Dashboard.jsx`:
 ```jsx
 import Panel from "./Panel";
 import OnChainPanel from "./panels/OnChainPanel";
-import SentimentPanel from "./panels/SentimentPanel";
-import MacroPanel from "./panels/MacroPanel";
 import StablecoinPanel from "./panels/StablecoinPanel";
 import SignalBar from "./SignalBar";
 
 export default function Dashboard() {
   return (
-    <div className="min-h-screen p-4 md:p-6">
-      <header className="mb-6">
+    <div className="min-h-screen p-4 md:p-6 max-w-7xl mx-auto">
+      <header className="mb-4">
         <h1 className="text-2xl font-bold text-cyan-400">Crypto Command Center</h1>
-        <p className="text-slate-500 text-sm">On-Chain · Sentiment · Macro · Stablecoin</p>
+        <p className="text-slate-500 text-xs">On-Chain Intelligence · Stablecoin Flows</p>
       </header>
-      
       <SignalBar />
-      
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
         <Panel title="On-Chain Intelligence"><OnChainPanel /></Panel>
-        <Panel title="AI Sentiment"><SentimentPanel /></Panel>
-        <Panel title="Macro × Crypto"><MacroPanel /></Panel>
         <Panel title="Stablecoin Flows"><StablecoinPanel /></Panel>
       </div>
     </div>
@@ -1836,25 +1530,23 @@ export default function Dashboard() {
 }
 ```
 
-**Step 4: App.jsx entry**
-
 `frontend/src/App.jsx`:
 ```jsx
 import Dashboard from "./components/Dashboard";
 export default function App() { return <Dashboard />; }
 ```
 
-**Step 5: Commit**
+**Commit:**
 
 ```bash
-git add -A && git commit -m "feat: create responsive dashboard shell with 2x2 grid"
+git add -A && git commit -m "feat: create dashboard shell with SignalBar hero + 2-panel layout"
 ```
 
 ---
 
-### Task 7.2: Signal bar with WebSocket live updates + directional awareness
+### Task 4.2: SignalBar component (4-state, calibration display, narrative, WS auth)
 
-**Objective:** Top bar showing confluence score, direction (RISING/FALLING/STABLE), and component breakdown.
+**Objective:** Dominant SignalBar with CALIBRATING/WEAK/MODERATE/STRONG, progress during calibration, narrative text, WebSocket with token auth.
 
 **Files:**
 - Create: `frontend/src/components/SignalBar.jsx`
@@ -1865,62 +1557,95 @@ git add -A && git commit -m "feat: create responsive dashboard shell with 2x2 gr
 ```jsx
 import { useState, useEffect } from "react";
 
-const SIGNAL_COLORS = {
-  STRONG: "bg-green-500",
-  MODERATE: "bg-amber-500",
-  WEAK: "bg-red-500",
+const SIGNAL_STYLES = {
+  CALIBRATING: "bg-slate-600 text-slate-300",
+  STRONG: "bg-green-500 text-white",
+  MODERATE: "bg-amber-500 text-white",
+  WEAK: "bg-red-500 text-white",
 };
 
-const DIRECTION_ICONS = {
-  RISING: "▲",
-  FALLING: "▼",
-  STABLE: "→",
-};
+const DIRECTION_ICONS = { RISING: "▲", FALLING: "▼", STABLE: "→" };
+const DIRECTION_COLORS = { RISING: "text-green-400", FALLING: "text-red-400", STABLE: "text-slate-400" };
 
 export default function SignalBar() {
   const [confluence, setConfluence] = useState(null);
+  const [wsConnected, setWsConnected] = useState(false);
 
   useEffect(() => {
+    // Fetch initial state
+    fetch("/api/signals/confluence").then(r => r.json()).then(setConfluence);
+  }, []);
+
+  useEffect(() => {
+    // WebSocket with token auth — token fetched from dev server or hardcoded for dev
+    const token = "DEV_TOKEN"; // In production, inject via env or fetch from /api/ws-token
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
-    socket.onmessage = (e) => {
+    const ws = new WebSocket(`${protocol}//${window.location.host}/ws?token=${token}`);
+    ws.onopen = () => setWsConnected(true);
+    ws.onmessage = (e) => {
       const data = JSON.parse(e.data);
       setConfluence(data.confluence);
     };
-    return () => socket.close();
-  }, []);
-
-  useEffect(() => {
-    fetch("/api/signals/confluence")
-      .then((r) => r.json())
-      .then(setConfluence);
+    ws.onclose = () => setWsConnected(false);
+    return () => ws.close();
   }, []);
 
   const overall = confluence?.overall_score ?? 0;
-  const signal = confluence?.signal ?? "WEAK";
+  const signal = confluence?.signal ?? "CALIBRATING";
   const direction = confluence?.direction ?? "STABLE";
+  const narrative = confluence?.narrative ?? "";
+  const calibration = confluence?.calibration_progress;
+  const isCalibrating = confluence?.calibration_status === "calibrating";
 
   return (
-    <div className="bg-[#13131a] border border-[#1e1e2e] rounded-lg p-4 mb-4">
+    <div className="bg-[#13131a] border border-[#1e1e2e] rounded-lg p-4 md:p-6 mb-4">
+      {/* Top row: badge + bar + percentage */}
       <div className="flex items-center gap-4">
-        <div className={`px-3 py-1 rounded font-bold text-sm text-white ${SIGNAL_COLORS[signal]}`}>
-          {signal} <span className="ml-1">{DIRECTION_ICONS[direction]}</span>
+        <div className={`px-3 py-1.5 rounded font-bold text-sm ${SIGNAL_STYLES[signal]}`}>
+          {signal}
+          {!isCalibrating && <span className={`ml-2 ${DIRECTION_COLORS[direction]}`}>{DIRECTION_ICONS[direction]}</span>}
         </div>
+        
         <div className="flex-1">
           <div className="text-xs text-slate-500 mb-1">Confluence Score</div>
-          <div className="h-2 bg-[#1e1e2e] rounded-full overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-red-500 via-amber-500 to-emerald-500 transition-all duration-500"
-              style={{ width: `${(overall * 100).toFixed(0)}%` }}
-            />
-          </div>
+          {isCalibrating ? (
+            <div className="h-2 bg-[#1e1e2e] rounded-full overflow-hidden">
+              <div className="h-full bg-slate-600 rounded-full transition-all duration-500"
+                   style={{ width: `${(calibration?.conditions_met || 0) / (calibration?.conditions_total || 4) * 100}%` }} />
+            </div>
+          ) : (
+            <div className="h-3 bg-[#1e1e2e] rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-red-500 via-amber-500 to-emerald-500 rounded-full transition-all duration-700"
+                   style={{ width: `${(overall * 100).toFixed(0)}%` }} />
+            </div>
+          )}
         </div>
-        <div className="text-2xl font-mono font-bold text-cyan-400">
-          {(overall * 100).toFixed(0)}%
+        
+        <div className="text-2xl md:text-3xl font-mono font-bold text-cyan-400">
+          {isCalibrating ? "--" : `${(overall * 100).toFixed(0)}%`}
         </div>
       </div>
-      {confluence?.components && (
-        <div className="grid grid-cols-4 gap-2 mt-3 text-xs text-slate-400">
+
+      {/* Narrative */}
+      {narrative && (
+        <p className="mt-2 text-sm text-slate-300">{narrative}</p>
+      )}
+
+      {/* Calibration progress details */}
+      {isCalibrating && calibration && (
+        <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-slate-500">
+          {Object.entries(calibration.conditions || {}).map(([key, cond]) => (
+            <div key={key} className={`text-center ${cond.met ? "text-green-400" : "text-slate-500"}`}>
+              <div>{key.replace(/_/g, " ")}</div>
+              <div className="font-mono">{cond.met ? "✓" : `${cond.current}/${cond.target}`}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Component scores (when calibrated) */}
+      {!isCalibrating && confluence?.components?.length > 0 && (
+        <div className="grid grid-cols-2 gap-2 mt-3 text-xs text-slate-400">
           {confluence.components.map((c) => (
             <div key={c.name} className="text-center" title={c.detail}>
               <div className="text-[10px] uppercase">{c.name}</div>
@@ -1929,27 +1654,33 @@ export default function SignalBar() {
           ))}
         </div>
       )}
+
+      {/* WS connection indicator */}
+      <div className="mt-2 text-[10px] text-right">
+        <span className={wsConnected ? "text-green-500" : "text-red-500"}>●</span>
+        <span className="text-slate-600 ml-1">{wsConnected ? "live" : "polling"}</span>
+      </div>
     </div>
   );
 }
 ```
 
+**Note:** The WebSocket token hardcoding is temporary for dev. In production, add a `/api/ws-token` endpoint that returns `WS_AUTH_TOKEN` (only accessible from localhost).
+
 **Step 2: Commit**
 
 ```bash
-git add -A && git commit -m "feat: add signal bar with WebSocket live updates and directional arrows"
+git add -A && git commit -m "feat: add SignalBar with 4-state spectrum, calibration progress, narrative, WS auth"
 ```
 
 ---
 
-### Task 7.3: On-Chain panel with auto-refresh, loading, and error states
+### Task 4.3: On-Chain panel (BTC + ETH, auto-refresh, all states)
 
-**Objective:** Table of recent whale transactions with auto-refresh (60s) and proper UI states.
+**Objective:** Whale tx table with blockchain filter, loading/error/empty states, 60s auto-refresh.
 
 **Files:**
 - Create: `frontend/src/components/panels/OnChainPanel.jsx`
-
-**Step 1: Write component**
 
 `frontend/src/components/panels/OnChainPanel.jsx`:
 ```jsx
@@ -1958,44 +1689,58 @@ import { useState, useEffect } from "react";
 export default function OnChainPanel() {
   const [whales, setWhales] = useState([]);
   const [stats, setStats] = useState(null);
+  const [chain, setChain] = useState(null); // null = all, "bitcoin", "ethereum"
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const fetchData = () => {
+    const params = new URLSearchParams({ limit: "10", min_usd: "500000" });
+    if (chain) params.set("blockchain", chain);
+    
     Promise.all([
-      fetch("/api/onchain/whales?limit=5&min_usd=500000").then((r) => r.json()),
-      fetch("/api/onchain/stats").then((r) => r.json()),
+      fetch(`/api/onchain/whales?${params}`).then(r => r.json()),
+      fetch("/api/onchain/stats").then(r => r.json()),
     ])
       .then(([w, s]) => { setWhales(w); setStats(s); setError(null); })
-      .catch((e) => setError(e.message))
+      .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchData(); const t = setInterval(fetchData, 60000); return () => clearInterval(t); }, []);
+  useEffect(() => { fetchData(); const t = setInterval(fetchData, 60000); return () => clearInterval(t); }, [chain]);
 
-  const formatUsd = (v) =>
-    v >= 1e9 ? `$${(v / 1e9).toFixed(1)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${v.toFixed(0)}`;
-
-  if (loading) return <p className="text-slate-500 text-xs">Loading...</p>;
-  if (error) return <p className="text-red-400 text-xs">Error: {error}</p>;
+  const formatUsd = (v) => v >= 1e9 ? `$${(v/1e9).toFixed(1)}B` : v >= 1e6 ? `$${(v/1e6).toFixed(1)}M` : `$${v.toFixed(0)}`;
 
   return (
     <div>
+      {/* Chain filter */}
+      <div className="flex gap-2 mb-3">
+        {[null, "bitcoin", "ethereum"].map(c => (
+          <button key={c ?? "all"} onClick={() => { setChain(c); setLoading(true); }}
+                  className={`text-xs px-2 py-1 rounded ${chain === c ? "bg-cyan-500/20 text-cyan-400" : "bg-[#1e1e2e] text-slate-400 hover:text-white"}`}>
+            {c ? c[0].toUpperCase() + c.slice(1) : "All"}
+          </button>
+        ))}
+      </div>
+
+      {/* Stats */}
       {stats && (
         <div className="flex gap-3 mb-3 text-xs">
-          <span className="text-slate-500">24h whales: <b className="text-cyan-400">{stats.total_whales}</b></span>
+          <span className="text-slate-500">24h: <b className="text-cyan-400">{stats.total}</b></span>
           <span className="text-slate-500">Max: <b className="text-white">{formatUsd(stats.max_amount)}</b></span>
         </div>
       )}
-      {whales.length === 0 ? (
-        <p className="text-slate-600 text-xs">No whale activity in this window</p>
-      ) : (
-        <div className="space-y-2 max-h-48 overflow-y-auto">
-          {whales.map((w) => (
+
+      {/* Content */}
+      {loading && <p className="text-slate-500 text-xs">Loading...</p>}
+      {error && <p className="text-red-400 text-xs">Error: {error}</p>}
+      {!loading && !error && whales.length === 0 && <p className="text-slate-600 text-xs">No whale activity in this window</p>}
+      {!loading && !error && whales.length > 0 && (
+        <div className="space-y-2 max-h-64 overflow-y-auto">
+          {whales.map(w => (
             <div key={w.tx_hash} className="flex justify-between text-xs border-b border-[#1e1e2e] pb-1">
-              <span className="text-slate-400 font-mono">{w.tx_hash.slice(0, 10)}...</span>
+              <span className="text-slate-500 w-12">{w.blockchain === "ethereum" ? "Ξ" : "₿"}</span>
+              <span className="text-slate-400 font-mono flex-1 truncate">{w.tx_hash.slice(0, 12)}...</span>
               <span className="text-cyan-400 font-mono">{formatUsd(w.amount_usd)}</span>
-              <span className="text-slate-500">{w.asset}</span>
             </div>
           ))}
         </div>
@@ -2005,222 +1750,26 @@ export default function OnChainPanel() {
 }
 ```
 
-**Step 2: Commit**
+**Commit:**
 
 ```bash
-git add -A && git commit -m "feat: add on-chain panel with auto-refresh, loading, error, and empty states"
+git add -A && git commit -m "feat: add on-chain panel with BTC/ETH filter, auto-refresh, full state handling"
 ```
 
 ---
 
-### Task 7.4: Sentiment panel with auto-refresh and states
+### Task 4.4: Stablecoin panel (supply bars, deltas, auto-refresh)
 
-**Objective:** Gauge showing aggregate sentiment with recent posts. Uses same state pattern.
-
-**Files:**
-- Create: `frontend/src/components/panels/SentimentPanel.jsx`
-
-**Step 1: Write component**
-
-`frontend/src/components/panels/SentimentPanel.jsx`:
-```jsx
-import { useState, useEffect } from "react";
-
-export default function SentimentPanel() {
-  const [trend, setTrend] = useState(null);
-  const [posts, setPosts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  const fetchData = () => {
-    Promise.all([
-      fetch("/api/sentiment/trend").then((r) => r.json()),
-      fetch("/api/sentiment/scores?limit=5").then((r) => r.json()),
-    ])
-      .then(([t, p]) => { setTrend(t); setPosts(p); setError(null); })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { fetchData(); const t = setInterval(fetchData, 60000); return () => clearInterval(t); }, []);
-
-  if (loading) return <p className="text-slate-500 text-xs">Loading...</p>;
-  if (error) return <p className="text-red-400 text-xs">Error: {error}</p>;
-
-  const score = trend?.avg_score ?? 0;
-  const gaugeAngle = (score + 1) * 90;
-
-  return (
-    <div>
-      <div className="flex items-center gap-3 mb-3">
-        <div className="relative w-16 h-8 overflow-hidden">
-          <div className="absolute bottom-0 left-0 w-full h-16 rounded-t-full bg-[#1e1e2e]">
-            <div
-              className="absolute bottom-0 left-1/2 w-1 h-8 bg-gradient-to-t from-red-500 via-amber-400 to-green-400 origin-bottom transition-transform duration-500"
-              style={{ transform: `rotate(${gaugeAngle - 90}deg)` }}
-            />
-          </div>
-          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 text-xs font-bold text-white">
-            {score > 0.1 ? "🐂" : score < -0.1 ? "🐻" : "➖"}
-          </div>
-        </div>
-        <div className="text-xs text-slate-500">
-          {trend?.count ?? 0} posts · {(score * 100).toFixed(0)}% net
-        </div>
-      </div>
-      {posts.length === 0 ? (
-        <p className="text-slate-600 text-xs">No sentiment data yet</p>
-      ) : (
-        <div className="space-y-1 max-h-40 overflow-y-auto">
-          {posts.map((p, i) => (
-            <div key={i} className="text-xs border-b border-[#1e1e2e] pb-1">
-              <div className="flex justify-between">
-                <span className={`font-mono ${p.score > 0 ? "text-green-400" : p.score < 0 ? "text-red-400" : "text-slate-400"}`}>
-                  {(p.score * 100).toFixed(0)}%
-                </span>
-                <span className="text-slate-500">{p.source}</span>
-              </div>
-              <div className="text-slate-400 truncate">{p.summary}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-```
-
-**Step 2: Commit**
-
-```bash
-git add -A && git commit -m "feat: add sentiment panel with auto-refresh and full state handling"
-```
-
----
-
-### Task 7.5: Macro overlay panel with TradingView chart + ResizeObserver
-
-**Objective:** Multi-line chart with DXY, BTC overlay, correlation display, responsive resize.
-
-**Files:**
-- Create: `frontend/src/components/panels/MacroPanel.jsx`
-
-**Step 1: Write component**
-
-`frontend/src/components/panels/MacroPanel.jsx`:
-```jsx
-import { useState, useEffect, useRef, useCallback } from "react";
-import { createChart } from "lightweight-charts";
-
-export default function MacroPanel() {
-  const chartRef = useRef(null);
-  const containerRef = useRef(null);
-  const [latest, setLatest] = useState([]);
-  const [correlation, setCorrelation] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  const fetchLatest = useCallback(() => {
-    fetch("/api/macro/latest").then((r) => r.json()).then(setLatest).catch(() => {});
-    fetch("/api/macro/correlation?pair=BTC-DXY&hours=168").then((r) => r.json()).then(setCorrelation).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    fetchLatest();
-    const t = setInterval(fetchLatest, 300000); // 5 min
-    return () => clearInterval(t);
-  }, [fetchLatest]);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const chart = createChart(containerRef.current, {
-      width: containerRef.current.clientWidth,
-      height: 220,
-      layout: { background: { color: "#13131a" }, textColor: "#94a3b8" },
-      grid: { vertLines: { color: "#1e1e2e" }, horzLines: { color: "#1e1e2e" } },
-      timeScale: { timeVisible: false },
-      rightPriceScale: { borderColor: "#1e1e2e" },
-      crosshair: { mode: 0 },
-    });
-
-    Promise.all([
-      fetch("/api/macro/history?indicator=BTC&hours=168").then((r) => r.json()),
-      fetch("/api/macro/history?indicator=DXY&hours=168").then((r) => r.json()),
-    ]).then(([btc, dxy]) => {
-      const btcSeries = chart.addLineSeries({
-        color: "#f7931a", lineWidth: 2,
-        priceFormat: { type: "price", minMove: 0.01 },
-      });
-      const dxySeries = chart.addLineSeries({
-        color: "#06b6d4", lineWidth: 1,
-        priceScaleId: "dxy",
-      });
-      chart.priceScale("dxy").applyOptions({ borderColor: "#06b6d4", textColor: "#06b6d4" });
-      btcSeries.setData(btc.map((d) => ({ time: Math.floor(d.timestamp), value: d.value })));
-      dxySeries.setData(dxy.map((d) => ({ time: Math.floor(d.timestamp), value: d.value })));
-      setLoading(false);
-    }).catch((e) => { setError(e.message); setLoading(false); });
-
-    const observer = new ResizeObserver(() => {
-      if (containerRef.current) chart.applyOptions({ width: containerRef.current.clientWidth });
-    });
-    observer.observe(containerRef.current);
-
-    return () => { observer.disconnect(); chart.remove(); };
-  }, []);
-
-  const indicators = { DXY: "💵", SP500: "📈", GOLD: "🥇", FEDFUNDS: "🏦", BTC: "₿", ETH: "Ξ" };
-
-  if (error) return <p className="text-red-400 text-xs">Chart error: {error}</p>;
-
-  return (
-    <div>
-      <div className="flex gap-2 mb-2 flex-wrap">
-        {latest.map((d) => (
-          <div key={d.indicator} className="bg-[#1e1e2e] px-2 py-1 rounded text-xs">
-            <span>{indicators[d.indicator] || ""}</span>{" "}
-            <span className="text-slate-400">{d.indicator}</span>{" "}
-            <span className="text-white font-mono">
-              {d.value > 1000 ? `$${d.value.toLocaleString()}` : d.value.toFixed(2)}
-            </span>
-          </div>
-        ))}
-      </div>
-      {correlation && (
-        <div className="text-xs text-slate-500 mb-1">
-          BTC↔DXY correlation:{" "}
-          <span className={correlation.correlation < -0.5 ? "text-green-400" : "text-amber-400"}>
-            {correlation.correlation?.toFixed(2) ?? "N/A"}
-          </span>
-        </div>
-      )}
-      {loading && <p className="text-slate-500 text-xs">Loading chart...</p>}
-      <div ref={containerRef} className="w-full" />
-    </div>
-  );
-}
-```
-
-**Step 2: Commit**
-
-```bash
-git add -A && git commit -m "feat: add macro panel with TradingView chart, ResizeObserver, and DXY correlation"
-```
-
----
-
-### Task 7.6: Stablecoin panel with auto-refresh and states
-
-**Objective:** Bar chart of stablecoin supply with 24h change indicators.
+**Objective:** Stablecoin supply bars with 24h change indicators, auto-refresh, all states.
 
 **Files:**
 - Create: `frontend/src/components/panels/StablecoinPanel.jsx`
 
-**Step 1: Write component**
-
 `frontend/src/components/panels/StablecoinPanel.jsx`:
 ```jsx
 import { useState, useEffect } from "react";
+
+const COLORS = { USDT: "#26a17b", USDC: "#2775ca", DAI: "#fab005", USDe: "#6366f1" };
 
 export default function StablecoinPanel() {
   const [supply, setSupply] = useState([]);
@@ -2229,53 +1778,48 @@ export default function StablecoinPanel() {
 
   const fetchData = () => {
     fetch("/api/stablecoin/supply")
-      .then((r) => r.json())
-      .then((data) => { setSupply(data); setError(null); })
-      .catch((e) => setError(e.message))
+      .then(r => r.json())
+      .then(data => { setSupply(data); setError(null); })
+      .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   };
 
   useEffect(() => { fetchData(); const t = setInterval(fetchData, 60000); return () => clearInterval(t); }, []);
 
-  const COLORS = { USDT: "#26a17b", USDC: "#2775ca", DAI: "#fab005", USDe: "#6366f1" };
-  const maxSupply = Math.max(...supply.map((s) => s.total_supply_usd || 0), 1);
+  const maxSupply = Math.max(...supply.map(s => s.total_supply_usd || 0), 1);
 
   if (loading) return <p className="text-slate-500 text-xs">Loading...</p>;
   if (error) return <p className="text-red-400 text-xs">Error: {error}</p>;
-  if (supply.length === 0) return <p className="text-slate-600 text-xs">No supply data yet</p>;
+  if (!supply.length) return <p className="text-slate-600 text-xs">No supply data yet — collecting...</p>;
 
   return (
-    <div>
-      <div className="space-y-2">
-        {supply.map((s) => (
-          <div key={s.stablecoin}>
-            <div className="flex justify-between text-xs mb-1">
+    <div className="space-y-3">
+      {supply.map(s => (
+        <div key={s.stablecoin}>
+          <div className="flex justify-between text-xs mb-1">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full" style={{ background: COLORS[s.stablecoin] || "#6366f1" }} />
               <span className="text-slate-400">{s.stablecoin}</span>
-              <span className="text-white font-mono">${(s.total_supply_usd / 1e9).toFixed(1)}B</span>
-              {s.change_24h_usd !== 0 && (
-                <span className={`font-mono ${s.change_24h_usd > 0 ? "text-green-400" : "text-red-400"}`}>
-                  {s.change_24h_usd > 0 ? "+" : ""}${(Math.abs(s.change_24h_usd) / 1e6).toFixed(0)}M
-                </span>
-              )}
             </div>
-            <div className="h-2 bg-[#1e1e2e] rounded-full overflow-hidden">
-              <div
-                className="h-full rounded-full transition-all"
-                style={{
-                  width: `${((s.total_supply_usd || 0) / maxSupply) * 100}%`,
-                  background: COLORS[s.stablecoin] || "#6366f1"
-                }}
-              />
-            </div>
+            <span className="text-white font-mono">${(s.total_supply_usd / 1e9).toFixed(1)}B</span>
+            {s.change_24h_usd !== 0 && (
+              <span className={`font-mono text-xs ${s.change_24h_usd > 0 ? "text-green-400" : "text-red-400"}`}>
+                {s.change_24h_usd > 0 ? "+" : ""}${(Math.abs(s.change_24h_usd) / 1e6).toFixed(0)}M
+              </span>
+            )}
           </div>
-        ))}
-      </div>
+          <div className="h-2 bg-[#1e1e2e] rounded-full overflow-hidden">
+            <div className="h-full rounded-full transition-all"
+                 style={{ width: `${((s.total_supply_usd || 0) / maxSupply) * 100}%`, background: COLORS[s.stablecoin] || "#6366f1" }} />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
 ```
 
-**Step 2: Commit**
+**Commit:**
 
 ```bash
 git add -A && git commit -m "feat: add stablecoin panel with supply bars, 24h deltas, and auto-refresh"
@@ -2283,37 +1827,16 @@ git add -A && git commit -m "feat: add stablecoin panel with supply bars, 24h de
 
 ---
 
-### Phase 8: Integration, Build & Ship
+### Task 4.5: Makefile + production build
 
----
-
-### Task 8.1: Production build setup (fixed Makefile + correct mount order)
-
-**Objective:** FastAPI serves the built React app as static files. Fixed Makefile with direct venv Python paths. Static mount AFTER all API routers.
+**Objective:** Fixed Makefile with direct venv paths, build + run commands.
 
 **Files:**
-- Modify: `backend/main.py` (add static mount at END)
 - Create: `Makefile`
-
-**Step 1: Add static file mount at the VERY END of main.py**
-
-At the **bottom** of `backend/main.py`, after ALL `app.include_router()` calls:
-
-```python
-# Static file mount — MUST be last, after all API routers
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-
-frontend_build = Path(__file__).parent.parent / "frontend" / "dist"
-if frontend_build.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_build), html=True), name="frontend")
-```
-
-**Step 2: Create fixed Makefile**
 
 `Makefile`:
 ```makefile
-.PHONY: install dev build run test clean
+.PHONY: install dev build run
 
 VENV_PYTHON = backend/venv/bin/python
 VENV_PIP = backend/venv/bin/pip
@@ -2334,172 +1857,205 @@ build:
 
 run:
 	cd backend && $(VENV_PYTHON) main.py
-
-test:
-	cd backend && $(VENV_PYTHON) -m pytest tests/ -v
-
-clean:
-	rm -rf frontend/dist backend/data/*.db backend/__pycache__ backend/app/**/__pycache__
 ```
 
-**Step 3: Build and verify full stack**
+**Build and verify:**
 
 ```bash
 cd /Users/tn/dev/crypto-dashboard
 make build
 make run &
 sleep 3
-# Test API still works (not shadowed by static mount)
-curl -s http://localhost:8000/api/health
-# Expected: {"status":"ok"}
-curl -s http://localhost:8000/api/signals/confluence | python3 -m json.tool | head -10
-# Test frontend served
-curl -s http://localhost:8000/ | head -5
-# Expected: HTML from React build
+curl -s http://127.0.0.1:8000/api/health
+curl -s http://127.0.0.1:8000/ | head -5
 kill %1
 ```
 
-**Step 4: Commit**
+**Commit:**
 
 ```bash
-git add -A && git commit -m "feat: production build setup with fixed Makefile and correct static mount order"
+git add -A && git commit -m "feat: add Makefile with production build and run commands"
 ```
 
 ---
 
-### Task 8.2: Final main.py — all routers assembled
+## Phase 1b: Experimental Panels (Week 2)
 
-**Objective:** Ensure main.py has ALL router includes in the correct order: API routers first, then static mount.
+---
 
-`backend/main.py` — final structure:
-```python
-"""Crypto Command Center — FastAPI backend."""
-from dotenv import load_dotenv
-load_dotenv()
+### Task 5.1: Sentiment collector (Reddit + batched OpenAI)
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.database import init_db
-from app.services.scheduler import start_collectors
+**Objective:** Fetch Reddit posts, score via single batched OpenAI call or expanded keyword fallback. Store with Fear & Greed baseline.
 
-# Import all routers
-from app.api.onchain import router as onchain_router
-from app.api.sentiment import router as sentiment_router
-from app.api.macro import router as macro_router
-from app.api.stablecoin import router as stablecoin_router
-from app.api.signals import router as signals_router, broadcast_full_state
+**Files:**
+- Create: `backend/app/collectors/sentiment_collector.py`
+- Create: `backend/app/repositories/sentiment_repo.py`
 
-app = FastAPI(title="Crypto Command Center", version="0.2.0")
+**Key differences from Phase 1a collectors:**
+- Fetches Fear & Greed Index from alternative.me API as baseline
+- Batched OpenAI call (40 posts → 1 API call)
+- Stores `baseline_fear_greed` alongside score for comparison
+- User-Agent header included (from HTTP client default)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ALL API routers before static mount
-app.include_router(onchain_router)
-app.include_router(sentiment_router)
-app.include_router(macro_router)
-app.include_router(stablecoin_router)
-app.include_router(signals_router)
-
-@app.on_event("startup")
-async def startup():
-    try:
-        await init_db()
-        start_collectors()
-        print("[startup] Ready — all collectors running")
-    except Exception as e:
-        print(f"[startup] FATAL: {e}")
-        import sys; sys.exit(1)
-
-@app.get("/api/health")
-async def health():
-    return {"status": "ok"}
-
-# Static file mount — MUST be LAST
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-frontend_build = Path(__file__).parent.parent / "frontend" / "dist"
-if frontend_build.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_build), html=True), name="frontend")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-```
-
-**Step 2: Verify full stack again**
-
-Same verification as Task 8.1 — ensure API and frontend both work.
-
-**Step 3: Commit**
+**Test:**
 
 ```bash
-git add -A && git commit -m "feat: assemble all routers in correct order — API before static mount"
+cd /Users/tn/dev/crypto-dashboard/backend && source venv/bin/activate
+pip install openai
+python -c "import asyncio; from app.collectors.sentiment_collector import collect; n = asyncio.run(collect()); print(f'Collected: {n}')"
 ```
 
 ---
 
-### Task 8.3: GitHub repo + push
+### Task 5.2: Macro collector (FRED + CoinGecko)
 
-**Objective:** Push to GitHub as `tokenburner7/crypto-command-center`.
+**Objective:** Fetch DXY, FEDFUNDS, GOLD, SP500 + BTC/ETH prices. Proper error handling — skip on failure, never insert 0.0.
 
-```bash
-cd /Users/tn/dev/crypto-dashboard
-gh repo create crypto-command-center --public --source=. --remote=origin --push
-gh repo view tokenburner7/crypto-command-center --web
+**Files:**
+- Create: `backend/app/collectors/macro_collector.py`
+- Create: `backend/app/repositories/macro_repo.py`
+
+---
+
+### Task 5.3: Sentiment + Macro API endpoints
+
+**Objective:** API routes for sentiment scores/trend and macro latest/history. Chart-ready data.
+
+**Files:**
+- Create: `backend/app/api/sentiment.py`
+- Create: `backend/app/api/macro.py`
+
+---
+
+### Task 5.4: Experimental panel infrastructure
+
+**Objective:** Opt-in toggle component, confidence indicator, experimental label. Reusable for both Sentiment and Macro panels.
+
+**Files:**
+- Create: `frontend/src/components/ExperimentalToggle.jsx`
+
+`frontend/src/components/ExperimentalToggle.jsx`:
+```jsx
+import { useState } from "react";
+
+export default function ExperimentalToggle({ label, children }) {
+  const [enabled, setEnabled] = useState(false);
+  
+  if (!enabled) {
+    return (
+      <div className="bg-[#13131a] border border-[#1e1e2e] rounded-lg p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">{label}</h3>
+            <p className="text-xs text-amber-500 mt-1">⚡ Experimental — opt-in to enable</p>
+          </div>
+          <button onClick={() => setEnabled(true)}
+                  className="px-3 py-1.5 bg-amber-500/20 text-amber-400 rounded text-xs hover:bg-amber-500/30 transition-colors">
+            Enable
+          </button>
+        </div>
+      </div>
+    );
+  }
+  
+  return (
+    <div className="bg-[#13131a] border border-[#1e1e2e] rounded-lg p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">{label}</h3>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-amber-500">EXPERIMENTAL</span>
+          <button onClick={() => setEnabled(false)}
+                  className="text-xs text-slate-500 hover:text-slate-300">Disable</button>
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
 ```
+
+---
+
+### Task 5.5: Sentiment panel (experimental, Fear & Greed baseline)
+
+**Objective:** Gauge + baseline comparison + post list. Wrapped in ExperimentalToggle.
+
+**Files:**
+- Create: `frontend/src/components/panels/SentimentPanel.jsx`
+
+---
+
+### Task 5.6: Macro panel (experimental, chart overlay, no correlation)
+
+**Objective:** TradingView chart with BTC/DXY overlay, ResizeObserver, indicator chips. Wrapped in ExperimentalToggle. No correlation number.
+
+**Files:**
+- Create: `frontend/src/components/panels/MacroPanel.jsx`
+
+---
+
+### Task 5.7: Dashboard update — add experimental panels
+
+**Objective:** Add Sentiment and Macro panels below Phase 1a panels, excluded from SignalBar, wrapped in ExperimentalToggle.
+
+**Modify:** `frontend/src/components/Dashboard.jsx`
+
+---
+
+### Task 5.8: Cipher's data flow audit
+
+**Objective:** Review Sentiment + Macro data flows before Phase 1b ships. Verify no API key leakage through frontend, no hardcoded secrets, no insecure WebSocket data exposure.
 
 ---
 
 ## Implementation Notes
 
-### Bug Fixes Applied (from adversarial review)
+### Phase 1a Task Summary
 
-| Bug | Fix |
-|-----|-----|
-| `max(0, avg)` deleting bearish sentiment | Normalize to [0,1] range preserving negative signals |
-| `SUM(amount)` on duplicate supply readings | `GROUP BY stablecoin` + latest reading only |
-| `compute_macro_score` ignoring 3/4 indicators | Now uses DXY, FEDFUNDS, GOLD, SP500 with weighted components |
-| Exchange flow stub with all zeroes | CoinGecko exchange volumes as proxy (v1) |
-| from_address/to_address always NULL | Parsed from Blockchain.info inputs/outputs |
-| Reddit 429 without User-Agent | APIClient now includes default User-Agent |
-| 40 sequential OpenAI calls | Batched into single LLM call |
-| Hardcoded "USDT" in stablecoin events | Single schema with per-stablecoin tracking |
-| Static mount shadowing API routes | Mount AFTER all routers |
-| Makefile `source` in sub-shell | Direct `venv/bin/python` paths |
-| `.env` never loaded | `load_dotenv()` at top of `main.py` |
-| `0.0` inserted on FRED failure | Returns `None`, skipped on insert |
-| No directional awareness | `direction` field: RISING/FALLING/STABLE |
-| No `.gitignore` | Added with node_modules, venv, *.db, .env |
-| Missing WAL mode | `PRAGMA journal_mode=WAL` in init |
-| `REAL` timestamps on UNIQUE | Changed to `INTEGER` |
+| # | Task | Key Deliverable |
+|---|------|----------------|
+| 0.1 | Security baseline | CORS, CSP, WS token, .gitignore |
+| 0.2 | Project scaffold | Dirs, deps, Vite, Tailwind |
+| 1.1 | Database schema | WAL mode, all tables, Pydantic models |
+| 1.2 | Repository layer | WhaleRepo + StablecoinRepo (≤200 lines) |
+| 1.3 | Exchange wallet config | 10 ETH wallets in JSON config |
+| 2.1 | BTC whale collector | Blockchain.info mempool |
+| 2.2 | ETH whale collector | Etherscan, config-driven wallets |
+| 2.3 | Stablecoin collector | DefiLlama with 24h deltas |
+| 2.4 | Background scheduler | APScheduler, all collectors |
+| 3.1 | On-Chain API | /api/onchain/whales + /stats |
+| 3.2 | Stablecoin API | /api/stablecoin/supply + /history |
+| 3.3 | Confluence engine | 2-signal, AND-gate calibration, 4 states, narrative |
+| 3.4 | Signals API + WS | REST + authenticated WebSocket |
+| 3.5 | Final main.py | Router assembly, static mount |
+| 4.1 | Dashboard shell | Dark theme, 2-panel grid, SignalBar hero |
+| 4.2 | SignalBar | 4-state, calibration progress, narrative, WS auth |
+| 4.3 | On-Chain panel | BTC/ETH filter, auto-refresh, all states |
+| 4.4 | Stablecoin panel | Supply bars, 24h deltas, auto-refresh |
+| 4.5 | Makefile | Build + run + install |
 
-### Data Sources
+### Design Decisions (from Debate)
 
-| Tier | APIs Used | Auth Required |
-|------|-----------|---------------|
-| **Free (works now)** | Reddit JSON, DefiLlama, CoinGecko, Blockchain.info, FRED | Free FRED key |
-| **Enhanced (recommended)** | OpenAI (sentiment, batched) | `OPENAI_API_KEY` in `.env` |
-
-### Future Enhancements (v2+)
-
-1. **X/Twitter sentiment** — integrate `xurl` tool or X API for CT influencer tracking
-2. **Whale Alert API** — real-time multi-chain whale alerts
-3. **On-chain exchange flows** — Glassnode/Arkham address tagging for real inflow/outflow
-4. **Telegram alerting** — cronjob fires when confluence crosses STRONG threshold
-5. **Narrative detection** — LLM topic clustering to identify emerging narratives
-6. **Percentile-based thresholds** — replace hardcoded magic numbers with rolling percentile baselines
+| Decision | Source | Implementation |
+|----------|--------|---------------|
+| Scope: On-Chain + Stablecoin in Phase 1a | Session 1 | 12 tasks this week |
+| Sentiment + Macro = experimental, Phase 1b | Session 1 | Opt-in toggles, excluded from SignalBar |
+| CALIBRATING → live: AND(100pts, 48h, fresh) | Session 1A | `_check_calibration()` in confluence.py |
+| WEAK state ships in v1 | Session 1A | 4-state SignalBar from day one |
+| Grey bar during calibration | Session 1A | Color spectrum activates post-calibration |
+| Multi-chain from day one (BTC + ETH) | Session 1 | Dual collector, blockchain filter in panel |
+| Repository layer, 200-line budget | Session 1 | WhaleRepo + StablecoinRepo |
+| Exchange "flows" renamed to "volumes" | Session 1 | `exchange_volumes` table, honest labeling |
+| Correlation endpoint killed | Session 1 | Deferred to v2 |
+| Security baseline = standalone first PR | Session 1 | Task 0.1 ships before any feature code |
+| Exchange wallets in config, not hardcoded | Session 1A | `config/exchange_wallets.json` |
+| Narrative summary in SignalBar | Session 1 | `_generate_narrative()` in confluence.py |
 
 ### Running the Dashboard
 
 ```bash
 cd /Users/tn/dev/crypto-dashboard
-make install   # first time: create venv + install deps
-make build     # build React frontend
-make run       # start FastAPI on :8000
-# Open http://localhost:8000
+make install   # first time only
+make build     # build React
+make run       # start on http://127.0.0.1:8000
 ```
