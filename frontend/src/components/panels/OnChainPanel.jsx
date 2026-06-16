@@ -22,7 +22,10 @@ export default function OnChainPanel() {
 
   useEffect(() => { fetchData(); const t = setInterval(fetchData, 60000); return () => clearInterval(t); }, [chain]);
 
-  const formatUsd = (v) => v >= 1e9 ? `$${(v/1e9).toFixed(1)}B` : v >= 1e6 ? `$${(v/1e6).toFixed(1)}M` : `$${v.toFixed(0)}`;
+  const formatUsd = (v) => {
+    if (v == null || isNaN(v)) return "$0";
+    return v >= 1e9 ? `$${(v/1e9).toFixed(1)}B` : v >= 1e6 ? `$${(v/1e6).toFixed(1)}M` : `$${v.toFixed(0)}`;
+  };
 
   return (
     <div>

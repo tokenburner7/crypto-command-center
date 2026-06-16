@@ -72,7 +72,7 @@ export default function SignalBar() {
           {Object.entries(calibration.conditions || {}).map(([key, cond]) => (
             <div key={key} className={`text-center ${cond.met ? "text-green-400" : "text-slate-500"}`}>
               <div>{key.replace(/_/g, " ")}</div>
-              <div className="font-mono">{cond.met ? "✓" : `${cond.current}/${cond.target}`}</div>
+              <div className="font-mono">{cond.met ? "✓" : cond.current != null ? `${cond.current}/${cond.target}` : "—"}</div>
             </div>
           ))}
         </div>
