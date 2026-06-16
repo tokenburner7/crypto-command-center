@@ -32,7 +32,7 @@ async def fetch_reddit_posts(subreddit: str, limit: int = 25):
             d = p["data"]
             results.append({
                 "title": d["title"],
-                "text": d.get("selftext", "")[:500],
+                "text": (d.get("selftext") or "")[:500],
                 "score": d["score"],
                 "num_comments": d["num_comments"],
                 "url": f"https://reddit.com{d['permalink']}",
@@ -129,7 +129,7 @@ async def collect():
                 "topic": s.get("topic", "crypto"),
                 "score": s["score"],
                 "confidence": None,
-                "summary": s.get("summary", "")[:300],
+                "summary": (s.get("summary") or "")[:300],
                 "baseline_fear_greed": baseline,
                 "url": post["url"],
                 "timestamp": post["created_utc"],

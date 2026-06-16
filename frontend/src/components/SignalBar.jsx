@@ -19,15 +19,31 @@ export default function SignalBar() {
   }, []);
 
   useEffect(() => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-    ws.onopen = () => setWsConnected(true);
-    ws.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      setConfluence(data.confluence);
+    let ws;
+    let reconnectTimer;
+    let attempt = 0;
+    
+    const connect = () => {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      ws.onopen = () => { setWsConnected(true); attempt = 0; };
+      ws.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          setConfluence(data.confluence);
+        } catch {}
+      };
+      ws.onclose = () => {
+        setWsConnected(false);
+        const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
+        attempt++;
+        reconnectTimer = setTimeout(connect, delay);
+      };
+      ws.onerror = () => ws.close();
     };
-    ws.onclose = () => setWsConnected(false);
-    return () => ws.close();
+    
+    connect();
+    return () => { clearTimeout(reconnectTimer); if (ws) ws.close(); };
   }, []);
 
   const overall = confluence?.overall_score ?? 0;

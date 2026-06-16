@@ -1,2 +1,10 @@
 import Dashboard from "./components/Dashboard";
-export default function App() { return <Dashboard />; }
+import ErrorBoundary from "./components/ErrorBoundary";
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <Dashboard />
+    </ErrorBoundary>
+  );
+}

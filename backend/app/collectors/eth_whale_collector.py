@@ -42,7 +42,10 @@ async def collect():
             }
             data = await etherscan.get("", params=params)
             call_count += 1
-            for tx in data.get("result", [])[:3]:
+            result = data.get("result", [])
+            if not isinstance(result, list):
+                continue  # Etherscan error response (rate limit, invalid key, etc.)
+            for tx in result[:3]:
                 value_eth = int(tx.get("value", 0)) / 1e18
                 value_usd = value_eth * price
                 if value_usd >= min_usd:
