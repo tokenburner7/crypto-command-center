@@ -1,7 +1,10 @@
 import Panel from "./Panel";
 import OnChainPanel from "./panels/OnChainPanel";
 import StablecoinPanel from "./panels/StablecoinPanel";
+import SentimentPanel from "./panels/SentimentPanel";
+import MacroPanel from "./panels/MacroPanel";
 import SignalBar from "./SignalBar";
+import ExperimentalToggle from "./ExperimentalToggle";
 
 export default function Dashboard() {
   return (
@@ -14,6 +17,14 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
         <Panel title="On-Chain Intelligence"><OnChainPanel /></Panel>
         <Panel title="Stablecoin Flows"><StablecoinPanel /></Panel>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+        <ExperimentalToggle label="AI Sentiment">
+          <SentimentPanel />
+        </ExperimentalToggle>
+        <ExperimentalToggle label="Macro × Crypto">
+          <MacroPanel />
+        </ExperimentalToggle>
       </div>
     </div>
   );

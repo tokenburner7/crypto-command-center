@@ -26,11 +26,15 @@ from app.services.scheduler import start_collectors
 from app.api.onchain import router as onchain_router
 from app.api.stablecoin import router as stablecoin_router
 from app.api.signals import router as signals_router, broadcast_full_state
+from app.api.sentiment import router as sentiment_router
+from app.api.macro import router as macro_router
 
 # === API ROUTERS (before static mount) ===
 app.include_router(onchain_router)
 app.include_router(stablecoin_router)
 app.include_router(signals_router)
+app.include_router(sentiment_router)
+app.include_router(macro_router)
 
 @app.on_event("startup")
 async def startup():
