@@ -74,7 +74,12 @@ async def score_sentiment_batch(posts: list[dict]) -> list[dict]:
             result = json.loads(resp.choices[0].message.content)
             return result.get("scores", [])
         except Exception as e:
-            print(f"[sentiment] OpenAI error, falling back to keywords: {e}")
+            err_msg=str(e)
+            if "api_key" in err_msg.lower() or "authorization" in err_msg.lower():
+                print("[sentiment] OpenAI auth error — check OPENAI_API_KEY in .env")
+            else:
+                print(f"[sentiment] OpenAI error: {err_msg[:100]}")
+            print("[sentiment] Falling back to keyword scoring")
     
     return [keyword_score(p, i) for i, p in enumerate(posts)]
 
